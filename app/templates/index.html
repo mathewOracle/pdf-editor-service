@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Documents - Offline PDF Editor{% endblock %}
+{% block content %}
+<div class="container">
+  <div class="card">
+    <h2 style="margin-top:0">Upload a PDF</h2>
+    <form method="post" action="/documents" enctype="multipart/form-data">
+      <div class="dropzone">
+        <input type="file" name="file" accept="application/pdf" required />
+        <p class="hint">Any PDF: scanned forms, fillable forms, plain documents.</p>
+      </div>
+      <br />
+      <button class="btn" type="submit">Upload and open editor</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Recent documents</h2>
+    {% if documents %}
+    <ul class="doc-list">
+      {% for doc in documents %}
+      <li>
+        <span>{{ doc.filename }} ({{ doc.page_count }} page{{ 's' if doc.page_count != 1 else '' }})</span>
+        <a class="btn secondary" href="/documents/{{ doc.id }}/edit">Open</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="hint">Nothing uploaded yet.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

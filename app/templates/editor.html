@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.filename }} - Offline PDF Editor{% endblock %}
+{% block content %}
+<div class="editor-layout">
+  <div class="sidebar">
+
+    <div class="card">
+      <h2>Add text</h2>
+      <div class="field-row">
+        <label>Text to place</label>
+        <input type="text" id="text-input" placeholder="e.g. John Smith" />
+      </div>
+      <div class="field-row">
+        <label>Font size (pt)</label>
+        <input type="number" id="font-size-input" value="14" min="6" max="72" />
+      </div>
+      <div class="field-row">
+        <label>Color</label>
+        <input type="color" id="color-input" value="#000000" />
+      </div>
+      <button class="btn" onclick="setPlacingMode('text')">Place text (click the page)</button>
+      <button class="btn secondary" onclick="setPlacingMode(null)">Cancel</button>
+    </div>
+
+    <div class="card">
+      <h2>Signatures / images</h2>
+      <form method="post" action="/documents/{{ doc.id }}/assets" enctype="multipart/form-data">
+        <div class="field-row">
+          <input type="file" name="file" accept="image/*" required />
+        </div>
+        <label style="display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="transparent_bg" value="true" checked style="width:auto" />
+          Remove white background automatically
+        </label>
+        <br />
+        <button class="btn secondary" type="submit">Upload</button>
+      </form>
+
+      {% if assets %}
+      <p class="hint" style="margin-top:12px">Click one, then click the page to place it:</p>
+      <div class="asset-grid">
+        {% for asset in assets %}
+        <div class="asset-thumb" data-asset-id="{{ asset.id }}" onclick="setPlacingMode('image', {{ asset.id }})">
+          <img src="/documents/{{ doc.id }}/assets/{{ asset.id }}/file" />
+        </div>
+        {% endfor %}
+      </div>
+      <div class="field-row" style="margin-top:10px">
+        <label>Placed width (fraction of page width)</label>
+        <input type="number" id="image-width-input" value="0.25" min="0.02" max="1" step="0.01" />
+      </div>
+      <button class="btn secondary" onclick="setPlacingMode(null)">Cancel</button>
+      {% endif %}
+    </div>
+
+    {% if fields %}
+    <div class="card">
+      <h2>Form fields detected</h2>
+      <form hx-post="/documents/{{ doc.id }}/fields" hx-target="#fields-status" hx-swap="innerHTML">
+        <div class="field-list">
+          {% for f in fields %}
+          <div class="field-row">
+            <label>{{ f.name }} (page {{ f.page_number + 1 }})</label>
+            <input type="text" name="field__{{ f.name }}" value="{{ f.value }}" />
+          </div>
+          {% endfor %}
+        </div>
+        <button class="btn secondary" type="submit">Save field values</button>
+      </form>
+      <div id="fields-status"></div>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <h2>Export</h2>
+      <form method="post" action="/documents/{{ doc.id }}/export">
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
+          <input type="checkbox" name="flatten" value="true" style="width:auto" />
+          Flatten to a fully non-editable PDF
+        </label>
+        <button class="btn" type="submit">Save as fresh PDF</button>
+      </form>
+    </div>
+  </div>
+
+  <div>
+    <div class="page-nav">
+      {% for n in page_numbers %}
+      <a class="btn secondary" href="#" onclick="showPage({{ n }}); return false;">Page {{ n + 1 }}</a>
+      {% endfor %}
+    </div>
+    <div class="page-canvas-wrap">
+      <div class="page-stage" id="page-stage" data-document-id="{{ doc.id }}" data-page-number="0" onclick="onStageClick(event)">
+        <img id="page-image" src="/documents/{{ doc.id }}/page/0.png" />
+        <div id="overlay-layer"
+             hx-get="/documents/{{ doc.id }}/elements?page=0"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function showPage(n) {
+    const stage = document.getElementById("page-stage");
+    stage.dataset.pageNumber = n;
+    document.getElementById("page-image").src = `/documents/{{ doc.id }}/page/${n}.png`;
+    refreshOverlay({{ doc.id }}, n);
+  }
+</script>
+{% endblock %}

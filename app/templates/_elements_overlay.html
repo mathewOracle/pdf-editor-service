@@ -1,0 +1,24 @@
+{% for el in elements %}
+  {% if el.kind == "text" %}
+  <div
+    id="el-{{ el.id }}"
+    class="overlay-el text"
+    style="left: {{ el.x_frac * 100 }}%; top: {{ el.y_frac * 100 }}%; font-size: calc({{ (el.font_size * 100 / page_width_pt) }} * 1cqw); color: {{ el.color }};"
+    onmousedown="startDrag(event, {{ el.id }})"
+  >
+    {{ el.text }}
+    <span class="remove-btn" onclick="removeElement(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})">x</span>
+  </div>
+  {% else %}
+  {% set asset = assets_by_id[el.asset_id] %}
+  <div
+    id="el-{{ el.id }}"
+    class="overlay-el"
+    style="left: {{ el.x_frac * 100 }}%; top: {{ el.y_frac * 100 }}%; width: {{ (el.width_frac or 0.25) * 100 }}%;"
+    onmousedown="startDrag(event, {{ el.id }})"
+  >
+    <img src="/documents/{{ el.document_id }}/assets/{{ asset.id }}/file" draggable="false" />
+    <span class="remove-btn" onclick="removeElement(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})">x</span>
+  </div>
+  {% endif %}
+{% endfor %}
