@@ -155,6 +155,53 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 }
 .overlay-el img { max-width: none; width: 100%; display: block; }
 
+/* Live-preview stand-in for an export-time redaction: hides the original
+   text pixels under a replaced line so the editor matches the final PDF. */
+.redact-cover {
+  position: absolute;
+  background: #fff;
+  pointer-events: none;
+}
+
+/* Double-click-to-edit state for placed text. */
+.overlay-el.text .el-text[contenteditable="true"] {
+  outline: 2px solid var(--accent);
+  background: rgba(255, 255, 255, 0.9);
+  cursor: text;
+  user-select: text;
+  min-width: 2em;
+  display: inline-block;
+}
+
+/* A replaced line whose new text is empty = "just erase it". Keep a small
+   visible handle so it can still be edited or undone. */
+.overlay-el.text.removed .el-text:empty::before {
+  content: "(erased)";
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* Rubber-band rectangle while dragging out an area to erase/replace. */
+.erase-rubberband {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  background: rgba(37, 99, 235, 0.1);
+  pointer-events: none;
+}
+
+/* "Edit existing text" mode: clickable boxes over lines already in the PDF. */
+#text-spans-layer { display: none; }
+#text-spans-layer.active { display: block; }
+.text-span-hit {
+  position: absolute;
+  background: rgba(250, 204, 21, 0.25);
+  outline: 1px dashed rgba(202, 138, 4, 0.9);
+  cursor: pointer;
+}
+.text-span-hit:hover { background: rgba(250, 204, 21, 0.5); }
+.text-span-hit.selected { background: rgba(37, 99, 235, 0.25); outline-color: var(--accent); }
+
 .overlay-el .remove-btn {
   position: absolute;
   top: -10px;

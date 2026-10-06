@@ -1,14 +1,19 @@
 {% for el in elements %}
   {% if el.kind == "text" %}
+  {% if el.redact_x0_frac is not none %}
+  <div class="redact-cover"
+       style="left: {{ el.redact_x0_frac * 100 }}%; top: {{ el.redact_y0_frac * 100 }}%;
+              width: {{ (el.redact_x1_frac - el.redact_x0_frac) * 100 }}%;
+              height: {{ (el.redact_y1_frac - el.redact_y0_frac) * 100 }}%;"></div>
+  {% endif %}
   <div
     id="el-{{ el.id }}"
-    class="overlay-el text"
+    class="overlay-el text{% if not el.text %} removed{% endif %}"
     style="left: {{ el.x_frac * 100 }}%; top: {{ el.y_frac * 100 }}%; font-size: calc({{ (el.font_size * 100 / page_width_pt) }} * 1cqw); color: {{ el.color }};"
     onmousedown="startDrag(event, {{ el.id }})"
-  >
-    {{ el.text }}
-    <span class="remove-btn" onclick="removeElement(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})">x</span>
-  </div>
+    ondblclick="startInlineEdit(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})"
+    title="Drag to move, double-click to edit"
+  ><span class="el-text">{{ el.text or "" }}</span><span class="remove-btn" onclick="removeElement(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})" title="Remove (restores original text)">x</span></div>
   {% else %}
   {% set asset = assets_by_id[el.asset_id] %}
   <div

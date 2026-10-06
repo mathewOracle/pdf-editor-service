@@ -55,6 +55,18 @@ class Element(SQLModel, table=True):
     asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
     width_frac: Optional[float] = None  # width as a fraction of page width
 
+    # Set only when this text element is *replacing* text that already
+    # existed in the original PDF (as opposed to text placed fresh on a
+    # blank/already-printed area). When present, export must redact this
+    # rectangle -- genuinely removing the underlying original content, not
+    # just painting over it -- before drawing this element's replacement
+    # text. Stored as fractions of page width/height, same convention as
+    # x_frac/y_frac.
+    redact_x0_frac: Optional[float] = None
+    redact_y0_frac: Optional[float] = None
+    redact_x1_frac: Optional[float] = None
+    redact_y1_frac: Optional[float] = None
+
     created_at: datetime = Field(default_factory=utcnow)
 
 

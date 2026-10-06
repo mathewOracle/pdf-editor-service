@@ -20,6 +20,33 @@
       </div>
       <button class="btn" onclick="setPlacingMode('text')">Place text (click the page)</button>
       <button class="btn secondary" onclick="setPlacingMode(null)">Cancel</button>
+      <p class="hint" style="margin-top:10px">Tip: double-click any placed text to change its wording.</p>
+    </div>
+
+    <div class="card">
+      <h2>Edit existing text</h2>
+      <p class="hint">Highlights the text already in this PDF. Click a line to change it.</p>
+      <button class="btn secondary" id="edit-existing-toggle" onclick="toggleEditExistingMode()">Pick text to edit</button>
+      <div id="edit-existing-panel" style="display:none; margin-top:12px;">
+        <div class="field-row">
+          <label>Original</label>
+          <div id="edit-existing-original" class="hint" style="word-break:break-word;"></div>
+        </div>
+        <div class="field-row">
+          <label for="edit-existing-text">Replace with (leave empty to just remove it)</label>
+          <input type="text" id="edit-existing-text" />
+        </div>
+        <div class="field-row">
+          <label for="edit-existing-size">Font size (pt)</label>
+          <input type="number" id="edit-existing-size" min="4" max="72" step="0.5" />
+        </div>
+        <div class="field-row">
+          <label for="edit-existing-color">Color</label>
+          <input type="color" id="edit-existing-color" value="#000000" />
+        </div>
+        <button class="btn" onclick="confirmReplaceText()">Apply</button>
+        <button class="btn secondary" onclick="cancelReplaceText()">Cancel</button>
+      </div>
     </div>
 
     <div class="card">
@@ -90,7 +117,7 @@
       {% endfor %}
     </div>
     <div class="page-canvas-wrap">
-      <div class="page-stage" id="page-stage" data-document-id="{{ doc.id }}" data-page-number="0" onclick="onStageClick(event)">
+      <div class="page-stage" id="page-stage" data-document-id="{{ doc.id }}" data-page-number="0" data-page-height-pt="{{ page_heights_pt[0] }}" onclick="onStageClick(event)">
         <img id="page-image" src="/documents/{{ doc.id }}/page/0.png" onerror="onPageImageError()" onload="onPageImageLoad()" />
         <div id="page-error" class="hint" style="display:none; padding:40px; text-align:center;">
           Couldn't load this page (the server may have restarted). <a href="#" onclick="showPage(currentPageNumber()); return false;">Try again</a>.
@@ -100,6 +127,7 @@
              hx-trigger="load"
              hx-swap="innerHTML">
         </div>
+        <div id="text-spans-layer"></div>
       </div>
     </div>
   </div>
@@ -145,11 +173,15 @@
 
   window.addEventListener("resize", fitPageImage);
 
+  const PAGE_HEIGHTS_PT = {{ page_heights_pt | tojson }};
+
   function showPage(n) {
     const stage = document.getElementById("page-stage");
     stage.dataset.pageNumber = n;
+    stage.dataset.pageHeightPt = PAGE_HEIGHTS_PT[n];
     document.getElementById("page-image").src = `/documents/{{ doc.id }}/page/${n}.png?t=${Date.now()}`;
     refreshOverlay({{ doc.id }}, n);
+    if (editExistingActive) loadTextSpans({{ doc.id }}, n);
   }
 </script>
 {% endblock %}

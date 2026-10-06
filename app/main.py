@@ -3,8 +3,9 @@ elements/assets, filling AcroForm fields, and exporting a fresh PDF.
 """
 import shutil
 import uuid
+from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
@@ -79,6 +80,7 @@ def edit_document(request: Request, document_id: int, session: SessionDep):
         {
             "doc": doc,
             "page_numbers": list(range(doc.page_count)),
+            "page_heights_pt": pdf_utils.get_page_heights(Path(doc.stored_path)),
             "fields": fields,
             "assets": assets,
         },
@@ -90,6 +92,18 @@ def page_png(document_id: int, page_number: int, session: SessionDep, dpi: int =
     doc = get_document_or_404(session, document_id)
     png_bytes = pdf_utils.render_page_png(Path(doc.stored_path), page_number, dpi=dpi)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@app.get("/documents/{document_id}/text-spans")
+def text_spans(document_id: int, page: int, session: SessionDep):
+    """Line-level text already printed in the original PDF, for the
+    "click existing text to edit it" feature. Plain JSON (not an HTMX
+    partial) since the client needs the raw numbers to position its own
+    clickable highlight boxes, not pre-rendered HTML.
+    """
+    doc = get_document_or_404(session, document_id)
+    spans = pdf_utils.extract_text_spans(Path(doc.stored_path), page)
+    return [asdict(s) for s in spans]
 
 
 # ------------------------------------------------------------- elements --
@@ -176,19 +190,74 @@ def add_image_element(
     return HTMLResponse("")
 
 
+@app.post("/documents/{document_id}/elements/replace-text", response_class=HTMLResponse)
+def replace_text_element(
+    document_id: int,
+    session: SessionDep,
+    page_number: int = Form(...),
+    x_frac: float = Form(...),
+    y_frac: float = Form(...),
+    text: str = Form(...),
+    font_size: float = Form(14.0),
+    color: str = Form("#000000"),
+    redact_x0_frac: float = Form(...),
+    redact_y0_frac: float = Form(...),
+    redact_x1_frac: float = Form(...),
+    redact_y1_frac: float = Form(...),
+):
+    """Like add_text_element, but also remembers the original-PDF
+    rectangle to redact at export time -- this is "edit existing text",
+    whereas add_text_element is "place new text on a blank area".
+    """
+    get_document_or_404(session, document_id)
+    el = Element(
+        document_id=document_id,
+        page_number=page_number,
+        kind="text",
+        x_frac=x_frac,
+        y_frac=y_frac,
+        text=text,
+        font_size=font_size,
+        color=color,
+        redact_x0_frac=redact_x0_frac,
+        redact_y0_frac=redact_y0_frac,
+        redact_x1_frac=redact_x1_frac,
+        redact_y1_frac=redact_y1_frac,
+    )
+    session.add(el)
+    session.commit()
+    return HTMLResponse("")
+
+
 @app.patch("/documents/{document_id}/elements/{element_id}", response_class=HTMLResponse)
-def move_element(
+def update_element(
     document_id: int,
     element_id: int,
     session: SessionDep,
-    x_frac: float = Form(...),
-    y_frac: float = Form(...),
+    x_frac: Optional[float] = Form(None),
+    y_frac: Optional[float] = Form(None),
+    text: Optional[str] = Form(None),
+    font_size: Optional[float] = Form(None),
+    color: Optional[str] = Form(None),
 ):
+    """Single endpoint for both moving an element (drag-and-drop sends
+    x_frac/y_frac) and editing its content (double-click-to-edit sends
+    text/font_size/color) -- same row, no reason to split the API.
+    Only fields actually present in the request get touched.
+    """
     el = session.get(Element, element_id)
     if el is None or el.document_id != document_id:
         raise HTTPException(404, "Element not found")
-    el.x_frac = x_frac
-    el.y_frac = y_frac
+    if x_frac is not None:
+        el.x_frac = x_frac
+    if y_frac is not None:
+        el.y_frac = y_frac
+    if text is not None:
+        el.text = text
+    if font_size is not None:
+        el.font_size = font_size
+    if color is not None:
+        el.color = color
     session.add(el)
     session.commit()
     return HTMLResponse("")
@@ -289,6 +358,11 @@ def export_document(document_id: int, session: SessionDep, flatten: bool = Form(
             "text": el.text,
             "font_size": el.font_size,
             "color": el.color,
+            "redact_box": (
+                (el.redact_x0_frac, el.redact_y0_frac, el.redact_x1_frac, el.redact_y1_frac)
+                if el.redact_x0_frac is not None
+                else None
+            ),
         }
         for el in elements
         if el.kind == "text"
