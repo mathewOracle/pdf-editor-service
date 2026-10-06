@@ -131,9 +131,17 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
   box-shadow: 0 2px 10px rgba(0,0,0,0.15);
   cursor: crosshair;
   container-type: inline-size;
+  /* .page-canvas-wrap is a flex container, so .page-stage (a flex item with
+     no explicit width) sizes to its content's intrinsic width. Any
+     percentage width/max-width on the <img> below (even just max-width:100%)
+     makes browsers treat the image's intrinsic size as indefinite for the
+     PARENT's own content-based sizing -- collapsing .page-stage to 0px,
+     which then makes 100% of 0 still 0. So: no percentage sizing on the
+     image at all. It renders at its natural pixel size; .page-canvas-wrap
+     already has overflow:auto so wider pages just get a scrollbar. */
 }
 
-.page-stage img { display: block; width: 100%; height: auto; pointer-events: none; }
+.page-stage img { display: block; pointer-events: none; }
 
 .overlay-el {
   position: absolute;

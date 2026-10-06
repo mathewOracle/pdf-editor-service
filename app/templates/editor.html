@@ -91,7 +91,10 @@
     </div>
     <div class="page-canvas-wrap">
       <div class="page-stage" id="page-stage" data-document-id="{{ doc.id }}" data-page-number="0" onclick="onStageClick(event)">
-        <img id="page-image" src="/documents/{{ doc.id }}/page/0.png" />
+        <img id="page-image" src="/documents/{{ doc.id }}/page/0.png" onerror="onPageImageError()" onload="onPageImageLoad()" />
+        <div id="page-error" class="hint" style="display:none; padding:40px; text-align:center;">
+          Couldn't load this page (the server may have restarted). <a href="#" onclick="showPage(currentPageNumber()); return false;">Try again</a>.
+        </div>
         <div id="overlay-layer"
              hx-get="/documents/{{ doc.id }}/elements?page=0"
              hx-trigger="load"
@@ -103,10 +106,49 @@
 </div>
 
 <script>
+  function currentPageNumber() {
+    return parseInt(document.getElementById("page-stage").dataset.pageNumber, 10);
+  }
+
+  function onPageImageError() {
+    document.getElementById("page-image").style.display = "none";
+    document.getElementById("page-error").style.display = "block";
+  }
+
+  function onPageImageLoad() {
+    const img = document.getElementById("page-image");
+    img.style.display = "block";
+    document.getElementById("page-error").style.display = "none";
+    fitPageImage();
+  }
+
+  function fitPageImage() {
+    // Deliberately JS-computed pixel widths, not CSS percentages: see
+    // styles.css for why percentage sizing on the image collapses things
+    // in the flex layout. There's a second wrinkle here specific to
+    // .page-stage: it has `container-type: inline-size` (so the overlay
+    // text can size itself with cqw units), and establishing a container
+    // for container queries implicitly applies size containment -- the
+    // spec explicitly forbids a query container from sizing itself off
+    // its own descendants (that would create a resize feedback loop). So
+    // .page-stage's width can NEVER be "shrink to fit the image"; it must
+    // be told its width directly. We set stage + img to the same value.
+    const img = document.getElementById("page-image");
+    const stage = document.getElementById("page-stage");
+    const wrap = document.querySelector(".page-canvas-wrap");
+    if (!img.naturalWidth || !wrap) return;
+    const available = wrap.clientWidth - 40; // minus wrap's own padding
+    const displayWidth = Math.min(img.naturalWidth, Math.max(available, 100));
+    img.style.width = `${displayWidth}px`;
+    stage.style.width = `${displayWidth}px`;
+  }
+
+  window.addEventListener("resize", fitPageImage);
+
   function showPage(n) {
     const stage = document.getElementById("page-stage");
     stage.dataset.pageNumber = n;
-    document.getElementById("page-image").src = `/documents/{{ doc.id }}/page/${n}.png`;
+    document.getElementById("page-image").src = `/documents/{{ doc.id }}/page/${n}.png?t=${Date.now()}`;
     refreshOverlay({{ doc.id }}, n);
   }
 </script>
