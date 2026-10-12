@@ -33,6 +33,8 @@ _ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "document": (
         ("bg_color", "VARCHAR"),
         ("bg_tolerance", "INTEGER"),
+        ("removed_watermarks", "VARCHAR"),
+        ("faint_mark_strength", "INTEGER"),
     ),
 }
 

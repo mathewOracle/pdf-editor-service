@@ -243,3 +243,7 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
   vertical-align: middle;
 }
 input[type="range"] { width: 100%; }
+
+fieldset.plain { border: 0; padding: 0; margin: 0 0 10px; }
+.check-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; cursor: pointer; }
+.check-row input { width: auto; margin-top: 3px; }

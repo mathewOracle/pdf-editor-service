@@ -1,6 +1,7 @@
 """FastAPI entrypoint: routes for uploading PDFs, the editor UI, placing
 elements/assets, filling AcroForm fields, and exporting a fresh PDF.
 """
+import json
 import re
 import shutil
 import uuid
@@ -27,10 +28,21 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def document_redactions(session: Session, document_id: int) -> list[pdf_utils.Redaction]:
+def document_edits(session: Session, doc: Document) -> pdf_utils.Edits:
     """Every edit to *original* content for this document. Shared by the
     preview, the text picker and export so all three always agree.
     """
+    return pdf_utils.Edits(
+        redactions=tuple(_document_redactions(session, doc.id)),
+        watermarks=frozenset(removed_watermarks(doc)),
+    )
+
+
+def removed_watermarks(doc: Document) -> list[str]:
+    return json.loads(doc.removed_watermarks) if doc.removed_watermarks else []
+
+
+def _document_redactions(session: Session, document_id: int) -> list[pdf_utils.Redaction]:
     elements = session.exec(
         select(Element)
         .where(Element.document_id == document_id)
@@ -52,10 +64,16 @@ def document_redactions(session: Session, document_id: int) -> list[pdf_utils.Re
 DEFAULT_BG_TOLERANCE = 40
 
 
-def document_background(doc: Document) -> Optional[pdf_utils.Background]:
-    if not doc.bg_color:
-        return None
-    return pdf_utils.Background.from_hex(doc.bg_color, doc.bg_tolerance or DEFAULT_BG_TOLERANCE)
+DEFAULT_FAINT_MARK_STRENGTH = 50
+
+
+def document_cleanup(doc: Document) -> pdf_utils.PixelCleanup:
+    background = (
+        pdf_utils.Background.from_hex(doc.bg_color, doc.bg_tolerance or DEFAULT_BG_TOLERANCE)
+        if doc.bg_color
+        else None
+    )
+    return pdf_utils.PixelCleanup(background=background, faint_mark_strength=doc.faint_mark_strength)
 
 
 @app.on_event("startup")
@@ -117,8 +135,32 @@ def edit_document(request: Request, document_id: int, session: SessionDep):
             "assets": assets,
             "detected_bg": pdf_utils.detect_page_background(Path(doc.stored_path), 0),
             "default_bg_tolerance": DEFAULT_BG_TOLERANCE,
+            "watermarks": pdf_utils.detect_watermarks(Path(doc.stored_path)),
+            "removed_watermarks": set(removed_watermarks(doc)),
+            "default_faint_strength": DEFAULT_FAINT_MARK_STRENGTH,
         },
     )
+
+
+@app.post("/documents/{document_id}/watermarks", response_class=HTMLResponse)
+def set_watermarks(
+    document_id: int,
+    session: SessionDep,
+    remove: Annotated[list[str], Form()] = [],  # keys from detect_watermarks
+    faint_marks: bool = Form(False),
+    faint_strength: int = Form(DEFAULT_FAINT_MARK_STRENGTH, ge=0, le=100),
+):
+    """Save which watermarks to remove. Unticking everything = undo."""
+    doc = get_document_or_404(session, document_id)
+    known = {w.key for w in pdf_utils.detect_watermarks(Path(doc.stored_path))}
+    unknown = set(remove) - known
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown watermark(s): {sorted(unknown)}")
+    doc.removed_watermarks = json.dumps(sorted(remove)) if remove else None
+    doc.faint_mark_strength = faint_strength if faint_marks else None
+    session.add(doc)
+    session.commit()
+    return HTMLResponse("")
 
 
 @app.post("/documents/{document_id}/background", response_class=HTMLResponse)
@@ -148,8 +190,8 @@ def page_png(document_id: int, page_number: int, session: SessionDep, dpi: int =
         Path(doc.stored_path),
         page_number,
         dpi=dpi,
-        redactions=document_redactions(session, document_id),
-        background=document_background(doc),
+        edits=document_edits(session, doc),
+        cleanup=document_cleanup(doc),
     )
     return Response(content=png_bytes, media_type="image/png")
 
@@ -163,7 +205,7 @@ def text_spans(document_id: int, page: int, session: SessionDep):
     """
     doc = get_document_or_404(session, document_id)
     spans = pdf_utils.extract_text_spans(
-        Path(doc.stored_path), page, redactions=document_redactions(session, document_id)
+        Path(doc.stored_path), page, edits=document_edits(session, doc)
     )
     return [asdict(s) for s in spans]
 
@@ -447,8 +489,8 @@ def export_document(document_id: int, session: SessionDep, flatten: bool = Form(
         field_values=field_values,
         text_elements=text_elements,
         image_elements=image_elements,
-        redactions=document_redactions(session, document_id),
-        background=document_background(doc),
+        edits=document_edits(session, doc),
+        cleanup=document_cleanup(doc),
         flatten=flatten,
     )
     return FileResponse(output_path, filename=output_name, media_type="application/pdf")

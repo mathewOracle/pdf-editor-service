@@ -31,6 +31,12 @@ RGB = tuple[int, int, int]
 # anti-aliased edges of letters don't keep a ring of the old paper color.
 _SOFT_EDGE = 0.5
 
+_LUMA_WEIGHTS = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+# At strength 100 anything brighter than 1 - 0.6 = 40% luminance goes.
+# Black ink is ~10%, and a typical blue/red pen or stamp is ~30%.
+_FAINT_MAX_REACH = 0.6
+_FAINT_SOFT_BAND = 0.08  # blend just below the cutoff, so edges don't go jagged
+
 
 def detect_background_rgb(arr: np.ndarray) -> RGB:
     """The paper color: the most common color on the page.
@@ -67,6 +73,27 @@ def recolor_background(arr: np.ndarray, target: RGB, tolerance: int) -> np.ndarr
     out[distance <= tolerance] = target
     result = arr.copy()
     result[:, :, :3] = np.clip(out, 0, 255).astype(np.uint8)
+    return result
+
+
+def remove_faint_marks(arr: np.ndarray, strength: int) -> np.ndarray:
+    """Paint light marks (scanned watermarks, faded stamps, bleed-through)
+    with the paper color, keeping dark ink.
+
+    Works on brightness rather than color distance, so pale *colored*
+    watermarks (light red "COPY", light blue logos) go too. ``strength``
+    is 0-100: higher removes darker marks, and at the top end it starts
+    eating pencil and light ink.
+    """
+    rgb = arr[:, :, :3].astype(np.float32)
+    luminance = (rgb @ _LUMA_WEIGHTS) / 255
+    cutoff = 1.0 - (strength / 100) * _FAINT_MAX_REACH
+    weight = np.clip((luminance - (cutoff - _FAINT_SOFT_BAND)) / _FAINT_SOFT_BAND, 0.0, 1.0)
+
+    paper = np.array(detect_background_rgb(arr), dtype=np.float32)
+    out = rgb + weight[..., None] * (paper - rgb)
+    result = arr.copy()
+    result[:, :, :3] = np.clip(out.round(), 0, 255).astype(np.uint8)
     return result
 
 

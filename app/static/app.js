@@ -335,10 +335,14 @@ document.addEventListener("keydown", (e) => {
 // ---------------------------------------------------- background color --
 // Saved on the server; the preview re-renders with the new paper color.
 
-function saveBackground(body, statusText) {
+// Shared by the background and watermark cards: POST a setting, report
+// the result in that card's status line, re-render the page.
+function savePageSetting(path, body, statusId, okText) {
   const stage = document.getElementById("page-stage");
-  fetch(`/documents/${stage.dataset.documentId}/background`, { method: "POST", body }).then((r) => {
-    document.getElementById("bg-status").textContent = r.ok ? statusText : "Couldn't save that color.";
+  const status = document.getElementById(statusId);
+  status.textContent = "Saving...";
+  fetch(`/documents/${stage.dataset.documentId}/${path}`, { method: "POST", body }).then((r) => {
+    status.textContent = r.ok ? okText : "Couldn't save that. Please try again.";
     if (r.ok) showPage(currentPageNumber());
   });
 }
@@ -346,9 +350,19 @@ function saveBackground(body, statusText) {
 function applyBackground(evt) {
   evt.preventDefault();
   const body = new URLSearchParams(new FormData(evt.target));
-  saveBackground(body, `Background set to ${body.get("bg_color")}.`);
+  savePageSetting("background", body, "bg-status", `Background set to ${body.get("bg_color")}.`);
 }
 
 function resetBackground() {
-  saveBackground(new URLSearchParams({ bg_color: "" }), "Background back to the original.");
+  savePageSetting("background", new URLSearchParams({ bg_color: "" }), "bg-status", "Background back to the original.");
+}
+
+// ------------------------------------------------------------ watermarks --
+
+function applyWatermarks(evt) {
+  evt.preventDefault();
+  const body = new URLSearchParams(new FormData(evt.target));
+  const count = body.getAll("remove").length + (body.has("faint_marks") ? 1 : 0);
+  const text = count ? "Watermark removal applied." : "Watermarks restored.";
+  savePageSetting("watermarks", body, "wm-status", text);
 }

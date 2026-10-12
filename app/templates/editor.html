@@ -127,6 +127,43 @@
     </div>
 
     <div class="card">
+      <h2>Remove watermarks</h2>
+      <form id="wm-form" onsubmit="applyWatermarks(event)">
+        {% if watermarks %}
+        <fieldset class="plain">
+          <legend class="hint">Found in this PDF's text. Tick the ones to remove:</legend>
+          {% for w in watermarks %}
+          <label class="check-row">
+            <input type="checkbox" name="remove" value="{{ w.key }}" {% if w.key in removed_watermarks %}checked{% endif %} />
+            <span><strong>{{ w.label }}</strong>
+              <span class="hint">({{ w.reason }}, {{ w.pages | length }} page{{ 's' if w.pages | length != 1 }})</span></span>
+          </label>
+          {% endfor %}
+        </fieldset>
+        {% else %}
+        <p class="hint">No text watermarks found. If the watermark is part of a scan, use the option below.</p>
+        {% endif %}
+
+        <label class="check-row">
+          <input type="checkbox" name="faint_marks" value="true" {% if doc.faint_mark_strength is not none %}checked{% endif %} />
+          <span>Clean up faint marks in scans <span class="hint">(light grey or colored watermarks, faded stamps, see-through from the back)</span></span>
+        </label>
+        <div class="field-row">
+          <label for="wm-strength">
+            Strength: <output id="wm-strength-value" for="wm-strength">{{ doc.faint_mark_strength if doc.faint_mark_strength is not none else default_faint_strength }}</output>
+          </label>
+          <input type="range" id="wm-strength" name="faint_strength" min="5" max="100"
+                 value="{{ doc.faint_mark_strength if doc.faint_mark_strength is not none else default_faint_strength }}"
+                 oninput="document.getElementById('wm-strength-value').value = this.value" />
+          <p class="hint">Higher removes darker marks. If pencil or light ink starts to fade, turn it down.</p>
+        </div>
+        <button class="btn" type="submit">Apply</button>
+      </form>
+      <p class="hint" id="wm-status" role="status"></p>
+      <p class="hint">Cleaning up a scan, like changing the background color, exports pages as images.</p>
+    </div>
+
+    <div class="card">
       <h2>Export</h2>
       <form method="post" action="/documents/{{ doc.id }}/export">
         <label style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">

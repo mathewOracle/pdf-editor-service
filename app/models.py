@@ -23,6 +23,11 @@ class Document(SQLModel, table=True):
     # Optional paper recolor ("#rrggbb" + tolerance 0-255). None = untouched.
     bg_color: Optional[str] = None
     bg_tolerance: Optional[int] = None
+    # Watermark removal. removed_watermarks is a JSON list of keys from
+    # watermark.find_watermarks (text-layer marks); faint_mark_strength
+    # (0-100) cleans light marks out of scanned pixels. None = off.
+    removed_watermarks: Optional[str] = None
+    faint_mark_strength: Optional[int] = None
     created_at: datetime = Field(default_factory=utcnow)
 
 

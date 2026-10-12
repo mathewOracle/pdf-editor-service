@@ -10,7 +10,8 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
-from .image_utils import RGB, detect_background_rgb, recolor_background
+from .image_utils import RGB, detect_background_rgb, recolor_background, remove_faint_marks
+from .watermark import WatermarkCandidate, find_watermarks, remove_watermarks
 
 RedactMode = Literal["text", "area", "image"]
 
@@ -39,26 +40,47 @@ def rgb_to_hex(rgb: RGB) -> str:
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
+@dataclass(frozen=True)
+class PixelCleanup:
+    """Changes that can only be made to the rendered pixels of the original
+    pages. Faint marks go first, so a watermark becomes paper before the
+    paper gets recolored.
+    """
+
+    background: Optional[Background] = None
+    faint_mark_strength: Optional[int] = None  # 0-100, None = off
+
+    def __bool__(self) -> bool:
+        return self.background is not None or self.faint_mark_strength is not None
+
+    def apply(self, arr: np.ndarray) -> np.ndarray:
+        if self.faint_mark_strength is not None:
+            arr = remove_faint_marks(arr, self.faint_mark_strength)
+        if self.background:
+            arr = recolor_background(arr, self.background.rgb, self.background.tolerance)
+        return arr
+
+
+NO_CLEANUP = PixelCleanup()
+
+
 def _page_rgb_array(page: fitz.Page, dpi: int) -> np.ndarray:
     pix = page.get_pixmap(dpi=dpi, alpha=False)
     return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
 
 
-def _page_image(page: fitz.Page, dpi: int, background: Optional[Background]) -> Image.Image:
-    arr = _page_rgb_array(page, dpi)
-    if background:
-        arr = recolor_background(arr, background.rgb, background.tolerance)
-    return Image.fromarray(arr, mode="RGB")
+def _page_image(page: fitz.Page, dpi: int, cleanup: PixelCleanup) -> Image.Image:
+    return Image.fromarray(cleanup.apply(_page_rgb_array(page, dpi)), mode="RGB")
 
 
-def _rasterize(doc: fitz.Document, background: Optional[Background] = None) -> fitz.Document:
+def _rasterize(doc: fitz.Document, cleanup: PixelCleanup = NO_CLEANUP) -> fitz.Document:
     """Turn every page into a single image (like a fresh scan), optionally
-    recoloring the paper first. Closes ``doc`` and returns the new one.
+    cleaning up the pixels first. Closes ``doc`` and returns the new one.
     """
     out = fitz.open()
     for page in doc:
         buf = io.BytesIO()
-        _page_image(page, _RASTER_DPI, background).save(
+        _page_image(page, _RASTER_DPI, cleanup).save(
             buf, format="JPEG", quality=_RASTER_JPEG_QUALITY
         )
         new_page = out.new_page(width=page.rect.width, height=page.rect.height)
@@ -124,13 +146,27 @@ def apply_redactions(doc: fitz.Document, redactions: Iterable[Redaction]) -> Non
         page.apply_redactions(images=images, graphics=graphics, text=text)
 
 
-def open_redacted(pdf_path: Path, redactions: Iterable[Redaction] = ()) -> fitz.Document:
-    """Open the original with this document's redactions applied in memory.
+@dataclass(frozen=True)
+class Edits:
+    """Every change to *original* content: removed watermarks, then the
+    user's redactions (replaced/erased text, removed images).
+    """
+
+    redactions: tuple[Redaction, ...] = ()
+    watermarks: frozenset[str] = frozenset()
+
+
+NO_EDITS = Edits()
+
+
+def open_edited(pdf_path: Path, edits: Edits = NO_EDITS) -> fitz.Document:
+    """Open the original with this document's edits applied in memory.
     Single source of truth for preview, text/image picking, and export, so
     what you see in the editor is exactly what gets exported.
     """
     doc = fitz.open(pdf_path)
-    apply_redactions(doc, redactions)
+    remove_watermarks(doc, edits.watermarks)
+    apply_redactions(doc, edits.redactions)
     return doc
 
 
@@ -162,15 +198,15 @@ def render_page_png(
     pdf_path: Path,
     page_number: int,
     dpi: int = 150,
-    redactions: Iterable[Redaction] = (),
-    background: Optional[Background] = None,
+    edits: Edits = NO_EDITS,
+    cleanup: PixelCleanup = NO_CLEANUP,
 ) -> bytes:
-    with open_redacted(pdf_path, redactions) as doc:
+    with open_edited(pdf_path, edits) as doc:
         page = doc[page_number]
-        if not background:
+        if not cleanup:
             return page.get_pixmap(dpi=dpi).tobytes("png")
         buf = io.BytesIO()
-        _page_image(page, dpi, background).save(buf, format="PNG")
+        _page_image(page, dpi, cleanup).save(buf, format="PNG")
         return buf.getvalue()
 
 
@@ -178,6 +214,11 @@ def detect_page_background(pdf_path: Path, page_number: int) -> str:
     """Hex color of the page's paper, so the UI can show what it found."""
     with fitz.open(pdf_path) as doc:
         return rgb_to_hex(detect_background_rgb(_page_rgb_array(doc[page_number], dpi=72)))
+
+
+def detect_watermarks(pdf_path: Path) -> list[WatermarkCandidate]:
+    with fitz.open(pdf_path) as doc:
+        return find_watermarks(doc)
 
 
 _WIDGET_TYPE_NAMES = {
@@ -238,10 +279,10 @@ _FULL_PAGE_IMAGE_SHARE = 0.85
 
 
 def extract_images(
-    pdf_path: Path, page_number: int, redactions: Iterable[Redaction] = ()
+    pdf_path: Path, page_number: int, edits: Edits = NO_EDITS
 ) -> list[PageImage]:
     images: list[PageImage] = []
-    with open_redacted(pdf_path, redactions) as doc:
+    with open_edited(pdf_path, edits) as doc:
         page = doc[page_number]
         pw, ph = page.rect.width, page.rect.height
         for info in page.get_image_info():
@@ -253,7 +294,7 @@ def extract_images(
 
 
 def extract_text_spans(
-    pdf_path: Path, page_number: int, redactions: Iterable[Redaction] = ()
+    pdf_path: Path, page_number: int, edits: Edits = NO_EDITS
 ) -> list[TextSpan]:
     """Line-level text extraction for the "edit existing text" feature.
 
@@ -269,7 +310,7 @@ def extract_text_spans(
     spans: list[TextSpan] = []
     # Read from the *redacted* doc so lines already replaced/erased stop
     # showing up as pickable -- their overlay element is the handle now.
-    with open_redacted(pdf_path, redactions) as doc:
+    with open_edited(pdf_path, edits) as doc:
         page = doc[page_number]
         pw, ph = page.rect.width, page.rect.height
         raw = page.get_text("dict")
@@ -309,18 +350,18 @@ def bake_pdf(
     field_values: dict[str, str],
     text_elements: list[dict],
     image_elements: list[dict],
-    redactions: Iterable[Redaction] = (),
-    background: Optional[Background] = None,
+    edits: Edits = NO_EDITS,
+    cleanup: PixelCleanup = NO_CLEANUP,
     flatten: bool = False,
 ) -> None:
     """Write a fresh PDF with form fields filled and elements placed.
 
-    ``redactions`` are applied first (they rewrite the content stream, so
+    ``edits`` are applied first (they rewrite the content stream, so
     anything drawn before them could get swept up). That's how editing or
     removing content that already existed in the PDF is implemented.
-    ``background`` recolors the paper of the *original* pages. That needs
-    pixels, so those pages become images; text/images you placed are
-    drawn afterwards and stay crisp, and aren't recolored.
+    ``cleanup`` (paper recolor, faint-mark removal) works on the *original*
+    pages' pixels, so those pages become images; text/images you placed
+    are drawn afterwards and stay crisp, and aren't touched by it.
     ``text_elements``: dicts with page_number, x_frac, y_frac, text,
     font_size, color. Empty text = pure erase, nothing drawn.
     ``image_elements``: dicts with page_number, x_frac, y_frac, width_frac,
@@ -330,7 +371,7 @@ def bake_pdf(
     fresh scan) so nothing in it is interactive or editable anymore --
     useful when the destination only accepts a "flat" document.
     """
-    doc = open_redacted(original_path, redactions)
+    doc = open_edited(original_path, edits)
 
     if field_values:
         for page in doc:
@@ -339,8 +380,8 @@ def bake_pdf(
                     widget.field_value = field_values[widget.field_name]
                     widget.update()
 
-    if background:
-        doc = _rasterize(doc, background)
+    if cleanup:
+        doc = _rasterize(doc, cleanup)
 
     for el in text_elements:
         if not el["text"]:
