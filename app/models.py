@@ -20,6 +20,9 @@ class Document(SQLModel, table=True):
     filename: str
     stored_path: str
     page_count: int
+    # Optional paper recolor ("#rrggbb" + tolerance 0-255). None = untouched.
+    bg_color: Optional[str] = None
+    bg_tolerance: Optional[int] = None
     created_at: datetime = Field(default_factory=utcnow)
 
 

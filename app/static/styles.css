@@ -233,3 +233,13 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .asset-thumb img { width: 100%; display: block; }
 
 .field-list { display: flex; flex-direction: column; gap: 8px; }
+
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  vertical-align: middle;
+}
+input[type="range"] { width: 100%; }

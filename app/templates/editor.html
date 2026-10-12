@@ -99,6 +99,34 @@
     {% endif %}
 
     <div class="card">
+      <h2>Background color</h2>
+      <p class="hint">
+        Detected paper color:
+        <span class="swatch" style="background: {{ detected_bg }}" aria-hidden="true"></span>
+        <code>{{ detected_bg }}</code>. Swap it for a clean color on every page.
+      </p>
+      <form id="bg-form" onsubmit="applyBackground(event)">
+        <div class="field-row">
+          <label for="bg-color">New background color</label>
+          <input type="color" id="bg-color" name="bg_color" value="{{ doc.bg_color or '#ffffff' }}" />
+        </div>
+        <div class="field-row">
+          <label for="bg-tolerance">
+            Tolerance: <output id="bg-tolerance-value" for="bg-tolerance">{{ doc.bg_tolerance or default_bg_tolerance }}</output>
+          </label>
+          <input type="range" id="bg-tolerance" name="bg_tolerance" min="5" max="120"
+                 value="{{ doc.bg_tolerance or default_bg_tolerance }}"
+                 oninput="document.getElementById('bg-tolerance-value').value = this.value" />
+          <p class="hint">Higher = more off-white/grey areas count as paper. Too high starts eating light ink.</p>
+        </div>
+        <button class="btn" type="submit">Apply</button>
+        <button class="btn secondary" type="button" onclick="resetBackground()">Reset to original</button>
+      </form>
+      <p class="hint" id="bg-status" role="status">{% if doc.bg_color %}Background set to {{ doc.bg_color }}.{% endif %}</p>
+      <p class="hint">Heads up: recolored pages are exported as images, so their original text can't be selected anymore. Text and signatures you add stay sharp.</p>
+    </div>
+
+    <div class="card">
       <h2>Export</h2>
       <form method="post" action="/documents/{{ doc.id }}/export">
         <label style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">

@@ -1,6 +1,7 @@
 """FastAPI entrypoint: routes for uploading PDFs, the editor UI, placing
 elements/assets, filling AcroForm fields, and exporting a fresh PDF.
 """
+import re
 import shutil
 import uuid
 from dataclasses import asdict
@@ -46,6 +47,15 @@ def document_redactions(session: Session, document_id: int) -> list[pdf_utils.Re
         )
         for el in elements
     ]
+
+
+DEFAULT_BG_TOLERANCE = 40
+
+
+def document_background(doc: Document) -> Optional[pdf_utils.Background]:
+    if not doc.bg_color:
+        return None
+    return pdf_utils.Background.from_hex(doc.bg_color, doc.bg_tolerance or DEFAULT_BG_TOLERANCE)
 
 
 @app.on_event("startup")
@@ -105,8 +115,30 @@ def edit_document(request: Request, document_id: int, session: SessionDep):
             "page_heights_pt": pdf_utils.get_page_heights(Path(doc.stored_path)),
             "fields": fields,
             "assets": assets,
+            "detected_bg": pdf_utils.detect_page_background(Path(doc.stored_path), 0),
+            "default_bg_tolerance": DEFAULT_BG_TOLERANCE,
         },
     )
+
+
+@app.post("/documents/{document_id}/background", response_class=HTMLResponse)
+def set_background(
+    document_id: int,
+    session: SessionDep,
+    bg_color: str = Form(""),  # empty = reset to the original paper
+    bg_tolerance: int = Form(DEFAULT_BG_TOLERANCE, ge=0, le=255),
+):
+    """Save (or clear) the paper recolor. Applies to every page, both in
+    the preview and on export.
+    """
+    doc = get_document_or_404(session, document_id)
+    if bg_color and not re.fullmatch(r"#[0-9a-fA-F]{6}", bg_color):
+        raise HTTPException(status_code=422, detail="bg_color must look like #rrggbb")
+    doc.bg_color = bg_color or None
+    doc.bg_tolerance = bg_tolerance if bg_color else None
+    session.add(doc)
+    session.commit()
+    return HTMLResponse("")
 
 
 @app.get("/documents/{document_id}/page/{page_number}.png")
@@ -117,6 +149,7 @@ def page_png(document_id: int, page_number: int, session: SessionDep, dpi: int =
         page_number,
         dpi=dpi,
         redactions=document_redactions(session, document_id),
+        background=document_background(doc),
     )
     return Response(content=png_bytes, media_type="image/png")
 
@@ -415,6 +448,7 @@ def export_document(document_id: int, session: SessionDep, flatten: bool = Form(
         text_elements=text_elements,
         image_elements=image_elements,
         redactions=document_redactions(session, document_id),
+        background=document_background(doc),
         flatten=flatten,
     )
     return FileResponse(output_path, filename=output_name, media_type="application/pdf")

@@ -1,13 +1,70 @@
 """All PyMuPDF logic lives here: rendering previews, reading AcroForm
 fields, and baking elements/field values into a final output PDF.
 """
+import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable, Literal, Optional
 
 import fitz  # PyMuPDF
+import numpy as np
+from PIL import Image
+
+from .image_utils import RGB, detect_background_rgb, recolor_background
 
 RedactMode = Literal["text", "area", "image"]
+
+# Raw PNG streams at 300dpi bloat a multi-page PDF to tens of MB. JPEG at
+# quality 88 keeps text/ink crisp at a fraction of the size.
+_RASTER_DPI = 300
+_RASTER_JPEG_QUALITY = 88
+
+
+@dataclass(frozen=True)
+class Background:
+    """Replace each page's paper color with ``rgb``. See
+    image_utils.recolor_background for what ``tolerance`` means.
+    """
+
+    rgb: RGB
+    tolerance: int
+
+    @classmethod
+    def from_hex(cls, hex_color: str, tolerance: int) -> "Background":
+        h = hex_color.lstrip("#")
+        return cls(rgb=(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)), tolerance=tolerance)
+
+
+def rgb_to_hex(rgb: RGB) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _page_rgb_array(page: fitz.Page, dpi: int) -> np.ndarray:
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+
+
+def _page_image(page: fitz.Page, dpi: int, background: Optional[Background]) -> Image.Image:
+    arr = _page_rgb_array(page, dpi)
+    if background:
+        arr = recolor_background(arr, background.rgb, background.tolerance)
+    return Image.fromarray(arr, mode="RGB")
+
+
+def _rasterize(doc: fitz.Document, background: Optional[Background] = None) -> fitz.Document:
+    """Turn every page into a single image (like a fresh scan), optionally
+    recoloring the paper first. Closes ``doc`` and returns the new one.
+    """
+    out = fitz.open()
+    for page in doc:
+        buf = io.BytesIO()
+        _page_image(page, _RASTER_DPI, background).save(
+            buf, format="JPEG", quality=_RASTER_JPEG_QUALITY
+        )
+        new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+        new_page.insert_image(new_page.rect, stream=buf.getvalue())
+    doc.close()
+    return out
 
 
 @dataclass(frozen=True)
@@ -102,12 +159,25 @@ def get_page_heights(pdf_path: Path) -> list[float]:
 
 
 def render_page_png(
-    pdf_path: Path, page_number: int, dpi: int = 150, redactions: Iterable[Redaction] = ()
+    pdf_path: Path,
+    page_number: int,
+    dpi: int = 150,
+    redactions: Iterable[Redaction] = (),
+    background: Optional[Background] = None,
 ) -> bytes:
     with open_redacted(pdf_path, redactions) as doc:
         page = doc[page_number]
-        pix = page.get_pixmap(dpi=dpi)
-        return pix.tobytes("png")
+        if not background:
+            return page.get_pixmap(dpi=dpi).tobytes("png")
+        buf = io.BytesIO()
+        _page_image(page, dpi, background).save(buf, format="PNG")
+        return buf.getvalue()
+
+
+def detect_page_background(pdf_path: Path, page_number: int) -> str:
+    """Hex color of the page's paper, so the UI can show what it found."""
+    with fitz.open(pdf_path) as doc:
+        return rgb_to_hex(detect_background_rgb(_page_rgb_array(doc[page_number], dpi=72)))
 
 
 _WIDGET_TYPE_NAMES = {
@@ -240,6 +310,7 @@ def bake_pdf(
     text_elements: list[dict],
     image_elements: list[dict],
     redactions: Iterable[Redaction] = (),
+    background: Optional[Background] = None,
     flatten: bool = False,
 ) -> None:
     """Write a fresh PDF with form fields filled and elements placed.
@@ -247,6 +318,9 @@ def bake_pdf(
     ``redactions`` are applied first (they rewrite the content stream, so
     anything drawn before them could get swept up). That's how editing or
     removing content that already existed in the PDF is implemented.
+    ``background`` recolors the paper of the *original* pages. That needs
+    pixels, so those pages become images; text/images you placed are
+    drawn afterwards and stay crisp, and aren't recolored.
     ``text_elements``: dicts with page_number, x_frac, y_frac, text,
     font_size, color. Empty text = pure erase, nothing drawn.
     ``image_elements``: dicts with page_number, x_frac, y_frac, width_frac,
@@ -264,6 +338,9 @@ def bake_pdf(
                 if widget.field_name in field_values:
                     widget.field_value = field_values[widget.field_name]
                     widget.update()
+
+    if background:
+        doc = _rasterize(doc, background)
 
     for el in text_elements:
         if not el["text"]:
@@ -290,18 +367,6 @@ def bake_pdf(
         page.insert_image(rect, filename=str(el["asset_path"]))
 
     if flatten:
-        # Raw PNG streams at 300dpi bloat a multi-page PDF to tens of MB.
-        # JPEG at quality 88 keeps text/ink crisp at a fraction of the size
-        # (learned the hard way whitening the guest house form earlier).
-        flattened = fitz.open()
-        for page in doc:
-            pix = page.get_pixmap(dpi=300)
-            jpeg_bytes = pix.pil_tobytes(format="JPEG", quality=88)
-            new_page = flattened.new_page(width=page.rect.width, height=page.rect.height)
-            new_page.insert_image(new_page.rect, stream=jpeg_bytes)
-        doc.close()
-        flattened.save(output_path, garbage=4, deflate=True)
-        flattened.close()
-    else:
-        doc.save(output_path, garbage=4, deflate=True)
-        doc.close()
+        doc = _rasterize(doc)
+    doc.save(output_path, garbage=4, deflate=True)
+    doc.close()

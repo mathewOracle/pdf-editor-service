@@ -21,6 +21,22 @@ def init_db() -> None:
     _migrate_add_missing_columns()
 
 
+# Every column added after the first release, per table, with its SQL type.
+_ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "element": (
+        ("redact_x0_frac", "REAL"),
+        ("redact_y0_frac", "REAL"),
+        ("redact_x1_frac", "REAL"),
+        ("redact_y1_frac", "REAL"),
+        ("redact_mode", "VARCHAR"),
+    ),
+    "document": (
+        ("bg_color", "VARCHAR"),
+        ("bg_tolerance", "INTEGER"),
+    ),
+}
+
+
 def _migrate_add_missing_columns() -> None:
     """create_all() only creates tables that don't exist yet -- it never
     alters an existing table to add a newly-introduced column. Rather than
@@ -31,16 +47,11 @@ def _migrate_add_missing_columns() -> None:
     for a handful of nullable columns in a single-file local app.
     """
     with engine.connect() as conn:
-        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(element)")}
-        for column, sql_type in (
-            ("redact_x0_frac", "REAL"),
-            ("redact_y0_frac", "REAL"),
-            ("redact_x1_frac", "REAL"),
-            ("redact_y1_frac", "REAL"),
-            ("redact_mode", "VARCHAR"),
-        ):
-            if column not in existing:
-                conn.exec_driver_sql(f"ALTER TABLE element ADD COLUMN {column} {sql_type}")
+        for table, columns in _ADDED_COLUMNS.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for column, sql_type in columns:
+                if column not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
         # Rows written before redact_mode existed always used a full
         # white-out, which is what "area" means now.
         conn.exec_driver_sql(

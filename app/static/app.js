@@ -331,3 +331,24 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && document.activeElement?.id === "edit-existing-text") confirmReplaceText();
   if (e.key === "Escape" && pendingReplace) cancelReplaceText();
 });
+
+// ---------------------------------------------------- background color --
+// Saved on the server; the preview re-renders with the new paper color.
+
+function saveBackground(body, statusText) {
+  const stage = document.getElementById("page-stage");
+  fetch(`/documents/${stage.dataset.documentId}/background`, { method: "POST", body }).then((r) => {
+    document.getElementById("bg-status").textContent = r.ok ? statusText : "Couldn't save that color.";
+    if (r.ok) showPage(currentPageNumber());
+  });
+}
+
+function applyBackground(evt) {
+  evt.preventDefault();
+  const body = new URLSearchParams(new FormData(evt.target));
+  saveBackground(body, `Background set to ${body.get("bg_color")}.`);
+}
+
+function resetBackground() {
+  saveBackground(new URLSearchParams({ bg_color: "" }), "Background back to the original.");
+}
