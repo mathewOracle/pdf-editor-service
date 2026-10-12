@@ -35,12 +35,13 @@ class Asset(SQLModel, table=True):
 
 
 class Element(SQLModel, table=True):
-    """Something placed on top of a page: free text or a placed image."""
+    """Something placed on top of a page (free text / placed image), or an
+    edit to original content (replaced text / removed image)."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
     document_id: int = Field(foreign_key="document.id")
     page_number: int  # 0-indexed
-    kind: str  # "text" | "image"
+    kind: str  # "text" | "image" | "erase"
 
     # Position of the top-left corner, as a fraction of page width/height.
     x_frac: float
@@ -55,17 +56,17 @@ class Element(SQLModel, table=True):
     asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
     width_frac: Optional[float] = None  # width as a fraction of page width
 
-    # Set only when this text element is *replacing* text that already
-    # existed in the original PDF (as opposed to text placed fresh on a
-    # blank/already-printed area). When present, export must redact this
-    # rectangle -- genuinely removing the underlying original content, not
-    # just painting over it -- before drawing this element's replacement
-    # text. Stored as fractions of page width/height, same convention as
-    # x_frac/y_frac.
+    # Set only when this element edits/removes content that already existed
+    # in the original PDF. That rectangle is genuinely redacted (removed,
+    # not painted over) before anything is drawn. Fractions of page size.
+    #   kind="text"  + redact box -> replace existing text (empty text = erase)
+    #   kind="erase" + redact box -> remove an existing image, nothing drawn
+    # redact_mode is one of pdf_utils.RedactMode: "text" | "area" | "image".
     redact_x0_frac: Optional[float] = None
     redact_y0_frac: Optional[float] = None
     redact_x1_frac: Optional[float] = None
     redact_y1_frac: Optional[float] = None
+    redact_mode: Optional[str] = None
 
     created_at: datetime = Field(default_factory=utcnow)
 

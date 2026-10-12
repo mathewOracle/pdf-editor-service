@@ -3,8 +3,78 @@ fields, and baking elements/field values into a final output PDF.
 """
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Literal
 
 import fitz  # PyMuPDF
+
+RedactMode = Literal["text", "area", "image"]
+
+
+@dataclass(frozen=True)
+class Redaction:
+    """A rectangle of *original* PDF content to genuinely remove.
+
+    ``mode`` decides what gets removed inside the box:
+      * ``text``  -- only the glyphs (form lines, logos, borders survive).
+                     Used when editing a line that exists in the text layer.
+      * ``area``  -- everything: text, vector art, and image *pixels*,
+                     painted white. Used for scans / handwriting / stamps.
+      * ``image`` -- the whole embedded image object touching the box.
+                     Used for "remove this logo/picture".
+    """
+
+    page_number: int
+    x0_frac: float
+    y0_frac: float
+    x1_frac: float
+    y1_frac: float
+    mode: RedactMode = "area"
+
+
+# (images, graphics, text) flags for Page.apply_redactions, per mode.
+_REDACT_FLAGS: dict[str, tuple[int, int, int]] = {
+    "text": (fitz.PDF_REDACT_IMAGE_NONE, fitz.PDF_REDACT_LINE_ART_NONE, fitz.PDF_REDACT_TEXT_REMOVE),
+    "area": (fitz.PDF_REDACT_IMAGE_PIXELS, fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED, fitz.PDF_REDACT_TEXT_REMOVE),
+    "image": (fitz.PDF_REDACT_IMAGE_REMOVE, fitz.PDF_REDACT_LINE_ART_NONE, fitz.PDF_REDACT_TEXT_NONE),
+}
+# Text-mode boxes are shrunk vertically so glyphs of the lines directly
+# above/below (whose bboxes often overlap a few points) aren't swept up.
+_TEXT_BOX_VERTICAL_INSET = 0.2
+
+
+def _redaction_rect(page: fitz.Page, r: Redaction) -> fitz.Rect:
+    pw, ph = page.rect.width, page.rect.height
+    rect = fitz.Rect(r.x0_frac * pw, r.y0_frac * ph, r.x1_frac * pw, r.y1_frac * ph)
+    if r.mode == "text":
+        inset = rect.height * _TEXT_BOX_VERTICAL_INSET
+        rect = fitz.Rect(rect.x0, rect.y0 + inset, rect.x1, rect.y1 - inset)
+    return rect
+
+
+def apply_redactions(doc: fitz.Document, redactions: Iterable[Redaction]) -> None:
+    """Apply redactions in place. apply_redactions() takes one set of flags
+    for *all* pending annots on a page, so each mode gets its own pass.
+    """
+    by_page_mode: dict[tuple[int, str], list[Redaction]] = {}
+    for r in redactions:
+        by_page_mode.setdefault((r.page_number, r.mode), []).append(r)
+    for (page_number, mode), items in by_page_mode.items():
+        page = doc[page_number]
+        fill = (1, 1, 1) if mode == "area" else False
+        for r in items:
+            page.add_redact_annot(_redaction_rect(page, r), fill=fill)
+        images, graphics, text = _REDACT_FLAGS[mode]
+        page.apply_redactions(images=images, graphics=graphics, text=text)
+
+
+def open_redacted(pdf_path: Path, redactions: Iterable[Redaction] = ()) -> fitz.Document:
+    """Open the original with this document's redactions applied in memory.
+    Single source of truth for preview, text/image picking, and export, so
+    what you see in the editor is exactly what gets exported.
+    """
+    doc = fitz.open(pdf_path)
+    apply_redactions(doc, redactions)
+    return doc
 
 
 @dataclass
@@ -31,8 +101,10 @@ def get_page_heights(pdf_path: Path) -> list[float]:
         return [page.rect.height for page in doc]
 
 
-def render_page_png(pdf_path: Path, page_number: int, dpi: int = 150) -> bytes:
-    with fitz.open(pdf_path) as doc:
+def render_page_png(
+    pdf_path: Path, page_number: int, dpi: int = 150, redactions: Iterable[Redaction] = ()
+) -> bytes:
+    with open_redacted(pdf_path, redactions) as doc:
         page = doc[page_number]
         pix = page.get_pixmap(dpi=dpi)
         return pix.tobytes("png")
@@ -76,9 +148,43 @@ class TextSpan:
     x1_frac: float
     y1_frac: float
     font_size: float
+    color: str  # "#rrggbb" of the original text, so replacements match
 
 
-def extract_text_spans(pdf_path: Path, page_number: int) -> list[TextSpan]:
+@dataclass
+class PageImage:
+    """An embedded image (logo, photo, stamp) the user may want to remove."""
+
+    x0_frac: float
+    y0_frac: float
+    x1_frac: float
+    y1_frac: float
+
+
+# An image covering at least this share of the page is the page itself
+# (a scan). Offering "remove image" on it would blank the whole page, so
+# scans are left to the drag-a-box area eraser instead.
+_FULL_PAGE_IMAGE_SHARE = 0.85
+
+
+def extract_images(
+    pdf_path: Path, page_number: int, redactions: Iterable[Redaction] = ()
+) -> list[PageImage]:
+    images: list[PageImage] = []
+    with open_redacted(pdf_path, redactions) as doc:
+        page = doc[page_number]
+        pw, ph = page.rect.width, page.rect.height
+        for info in page.get_image_info():
+            bbox = fitz.Rect(info["bbox"]) & page.rect
+            if bbox.is_empty or bbox.get_area() >= _FULL_PAGE_IMAGE_SHARE * page.rect.get_area():
+                continue
+            images.append(PageImage(bbox.x0 / pw, bbox.y0 / ph, bbox.x1 / pw, bbox.y1 / ph))
+    return images
+
+
+def extract_text_spans(
+    pdf_path: Path, page_number: int, redactions: Iterable[Redaction] = ()
+) -> list[TextSpan]:
     """Line-level text extraction for the "edit existing text" feature.
 
     True PDF text editing (reflowing a run of text in place) isn't really
@@ -91,7 +197,9 @@ def extract_text_spans(pdf_path: Path, page_number: int) -> list[TextSpan]:
     without accidentally grabbing a whole paragraph.
     """
     spans: list[TextSpan] = []
-    with fitz.open(pdf_path) as doc:
+    # Read from the *redacted* doc so lines already replaced/erased stop
+    # showing up as pickable -- their overlay element is the handle now.
+    with open_redacted(pdf_path, redactions) as doc:
         page = doc[page_number]
         pw, ph = page.rect.width, page.rect.height
         raw = page.get_text("dict")
@@ -103,6 +211,7 @@ def extract_text_spans(pdf_path: Path, page_number: int) -> list[TextSpan]:
                     continue
                 x0, y0, x1, y1 = line["bbox"]
                 font_size = line_spans[0]["size"] if line_spans else 11.0
+                color = f"#{line_spans[0]['color']:06x}" if line_spans else "#000000"
                 spans.append(
                     TextSpan(
                         text=text,
@@ -111,6 +220,7 @@ def extract_text_spans(pdf_path: Path, page_number: int) -> list[TextSpan]:
                         x1_frac=x1 / pw,
                         y1_frac=y1 / ph,
                         font_size=font_size,
+                        color=color,
                     )
                 )
     return spans
@@ -129,16 +239,16 @@ def bake_pdf(
     field_values: dict[str, str],
     text_elements: list[dict],
     image_elements: list[dict],
+    redactions: Iterable[Redaction] = (),
     flatten: bool = False,
 ) -> None:
     """Write a fresh PDF with form fields filled and elements placed.
 
+    ``redactions`` are applied first (they rewrite the content stream, so
+    anything drawn before them could get swept up). That's how editing or
+    removing content that already existed in the PDF is implemented.
     ``text_elements``: dicts with page_number, x_frac, y_frac, text,
-    font_size, color, and an optional ``redact_box`` (x0_frac, y0_frac,
-    x1_frac, y1_frac) -- when present, that rectangle of the *original*
-    PDF content is genuinely redacted (removed, not just painted over)
-    before this element's text is drawn in its place. That's how "editing"
-    text that was already in the PDF is implemented; see extract_text_spans.
+    font_size, color. Empty text = pure erase, nothing drawn.
     ``image_elements``: dicts with page_number, x_frac, y_frac, width_frac,
     asset_path (already-resolved filesystem path to the image).
 
@@ -146,7 +256,7 @@ def bake_pdf(
     fresh scan) so nothing in it is interactive or editable anymore --
     useful when the destination only accepts a "flat" document.
     """
-    doc = fitz.open(original_path)
+    doc = open_redacted(original_path, redactions)
 
     if field_values:
         for page in doc:
@@ -154,25 +264,6 @@ def bake_pdf(
                 if widget.field_name in field_values:
                     widget.field_value = field_values[widget.field_name]
                     widget.update()
-
-    # Redactions must happen before any new drawing: apply_redactions()
-    # rewrites the page's content stream, so anything inserted beforehand
-    # risks being swept up or mis-clipped by it. Group by page so we only
-    # call apply_redactions() once per page that actually needs it.
-    pages_needing_redaction: set[int] = set()
-    for el in text_elements:
-        if el.get("redact_box"):
-            page = doc[el["page_number"]]
-            pw, ph = page.rect.width, page.rect.height
-            x0f, y0f, x1f, y1f = el["redact_box"]
-            rect = fitz.Rect(x0f * pw, y0f * ph, x1f * pw, y1f * ph)
-            page.add_redact_annot(rect, fill=(1, 1, 1))
-            pages_needing_redaction.add(el["page_number"])
-    for page_number in pages_needing_redaction:
-        # IMAGE_PIXELS blanks only the covered pixels of any image under the
-        # box -- essential for scanned PDFs, where the whole page IS one
-        # image and removing it outright would wipe everything.
-        doc[page_number].apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
 
     for el in text_elements:
         if not el["text"]:

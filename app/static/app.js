@@ -162,7 +162,7 @@ function startInlineEdit(evt, documentId, elementId, pageNumber) {
 // Either way we end up with a rectangle to redact plus optional new text.
 
 let editExistingActive = false;
-let pendingReplace = null; // {pageNumber, box: [x0,y0,x1,y1] fractions}
+let pendingReplace = null; // {pageNumber, box: [x0,y0,x1,y1] fractions, mode}
 let rubberband = null;
 
 function toggleEditExistingMode() {
@@ -218,7 +218,8 @@ function loadTextSpans(documentId, pageNumber) {
             [s.x0_frac, s.y0_frac, s.x1_frac, s.y1_frac],
             s.text,
             s.text,
-            Math.round(s.font_size * 2) / 2
+            Math.round(s.font_size * 2) / 2,
+            "text" // only remove the glyphs; keep form lines/borders
           );
         });
         layer.appendChild(hit);
@@ -275,12 +276,12 @@ function onAreaDragEnd() {
   const stage = document.getElementById("page-stage");
   const pageHeightPt = parseFloat(stage.dataset.pageHeightPt || "842");
   const guessSize = Math.max(6, Math.min(36, Math.round((y1 - y0) * pageHeightPt * 0.75)));
-  openReplacePanel([x0, y0, x1, y1], "(selected area)", "", guessSize);
+  openReplacePanel([x0, y0, x1, y1], "(selected area)", "", guessSize, "area");
 }
 
-function openReplacePanel(box, originalLabel, prefill, fontSize) {
+function openReplacePanel(box, originalLabel, prefill, fontSize, mode) {
   const stage = document.getElementById("page-stage");
-  pendingReplace = { pageNumber: stage.dataset.pageNumber, box };
+  pendingReplace = { pageNumber: stage.dataset.pageNumber, box, mode };
   document.getElementById("edit-existing-original").textContent = originalLabel;
   document.getElementById("edit-existing-text").value = prefill;
   document.getElementById("edit-existing-size").value = fontSize;
@@ -305,7 +306,7 @@ function confirmReplaceText() {
   if (!pendingReplace) return;
   const stage = document.getElementById("page-stage");
   const documentId = stage.dataset.documentId;
-  const { pageNumber, box } = pendingReplace;
+  const { pageNumber, box, mode } = pendingReplace;
   const [x0, y0, x1, y1] = box;
   const body = new URLSearchParams({
     page_number: pageNumber,
@@ -318,6 +319,7 @@ function confirmReplaceText() {
     redact_y0_frac: y0,
     redact_x1_frac: x1,
     redact_y1_frac: y1,
+    redact_mode: mode,
   });
   fetch(`/documents/${documentId}/elements/replace-text`, { method: "POST", body }).then(() => {
     cancelReplaceText();

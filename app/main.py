@@ -26,6 +26,28 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+def document_redactions(session: Session, document_id: int) -> list[pdf_utils.Redaction]:
+    """Every edit to *original* content for this document. Shared by the
+    preview, the text picker and export so all three always agree.
+    """
+    elements = session.exec(
+        select(Element)
+        .where(Element.document_id == document_id)
+        .where(Element.redact_x0_frac.is_not(None))
+    ).all()
+    return [
+        pdf_utils.Redaction(
+            page_number=el.page_number,
+            x0_frac=el.redact_x0_frac,
+            y0_frac=el.redact_y0_frac,
+            x1_frac=el.redact_x1_frac,
+            y1_frac=el.redact_y1_frac,
+            mode=el.redact_mode or "area",
+        )
+        for el in elements
+    ]
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
@@ -90,7 +112,12 @@ def edit_document(request: Request, document_id: int, session: SessionDep):
 @app.get("/documents/{document_id}/page/{page_number}.png")
 def page_png(document_id: int, page_number: int, session: SessionDep, dpi: int = 150):
     doc = get_document_or_404(session, document_id)
-    png_bytes = pdf_utils.render_page_png(Path(doc.stored_path), page_number, dpi=dpi)
+    png_bytes = pdf_utils.render_page_png(
+        Path(doc.stored_path),
+        page_number,
+        dpi=dpi,
+        redactions=document_redactions(session, document_id),
+    )
     return Response(content=png_bytes, media_type="image/png")
 
 
@@ -102,7 +129,9 @@ def text_spans(document_id: int, page: int, session: SessionDep):
     clickable highlight boxes, not pre-rendered HTML.
     """
     doc = get_document_or_404(session, document_id)
-    spans = pdf_utils.extract_text_spans(Path(doc.stored_path), page)
+    spans = pdf_utils.extract_text_spans(
+        Path(doc.stored_path), page, redactions=document_redactions(session, document_id)
+    )
     return [asdict(s) for s in spans]
 
 
@@ -197,13 +226,14 @@ def replace_text_element(
     page_number: int = Form(...),
     x_frac: float = Form(...),
     y_frac: float = Form(...),
-    text: str = Form(...),
+    text: str = Form(""),  # empty = "just erase the original", a valid edit
     font_size: float = Form(14.0),
     color: str = Form("#000000"),
     redact_x0_frac: float = Form(...),
     redact_y0_frac: float = Form(...),
     redact_x1_frac: float = Form(...),
     redact_y1_frac: float = Form(...),
+    redact_mode: pdf_utils.RedactMode = Form("area"),
 ):
     """Like add_text_element, but also remembers the original-PDF
     rectangle to redact at export time -- this is "edit existing text",
@@ -223,6 +253,7 @@ def replace_text_element(
         redact_y0_frac=redact_y0_frac,
         redact_x1_frac=redact_x1_frac,
         redact_y1_frac=redact_y1_frac,
+        redact_mode=redact_mode,
     )
     session.add(el)
     session.commit()
@@ -358,11 +389,6 @@ def export_document(document_id: int, session: SessionDep, flatten: bool = Form(
             "text": el.text,
             "font_size": el.font_size,
             "color": el.color,
-            "redact_box": (
-                (el.redact_x0_frac, el.redact_y0_frac, el.redact_x1_frac, el.redact_y1_frac)
-                if el.redact_x0_frac is not None
-                else None
-            ),
         }
         for el in elements
         if el.kind == "text"
@@ -388,6 +414,7 @@ def export_document(document_id: int, session: SessionDep, flatten: bool = Form(
         field_values=field_values,
         text_elements=text_elements,
         image_elements=image_elements,
+        redactions=document_redactions(session, document_id),
         flatten=flatten,
     )
     return FileResponse(output_path, filename=output_name, media_type="application/pdf")

@@ -44,6 +44,14 @@ def make_signature() -> None:
     img.save(SIGNATURE)
 
 
+def wait_for_page_image(page) -> dict:
+    """The stage only gets its real size once the page PNG loads and
+    fitPageImage() runs -- clicking before that hits a ~0px box."""
+    page.wait_for_load_state("networkidle")
+    page.wait_for_function("document.getElementById('page-stage').getBoundingClientRect().width > 100")
+    return page.locator("#page-stage").bounding_box()
+
+
 def main() -> None:
     make_signature()
     text_doc = upload(Path.home() / "Downloads" / "GH-Forms-CAT-II,III,IV (1).pdf")
@@ -83,9 +91,13 @@ def main() -> None:
         page.set_input_files("input[name=file]", str(SIGNATURE))
         page.click("form[action$='/assets'] button[type=submit]")
         page.wait_for_selector(".asset-thumb")
+        stage = wait_for_page_image(page)
         page.locator(".asset-thumb").last.click()
-        stage = page.locator("#page-stage").bounding_box()
-        page.mouse.click(stage["x"] + stage["width"] * 0.6, stage["y"] + stage["height"] * 0.85)
+        # locator.click scrolls into view; raw mouse.click uses viewport coords
+        # and silently misses anything below the fold of a tall page.
+        page.locator("#page-stage").click(
+            position={"x": stage["width"] * 0.6, "y": stage["height"] * 0.85}
+        )
         page.wait_for_selector(".overlay-el:not(.text) img")
         check("image element placed", page.locator(".overlay-el:not(.text)").count() == 1)
         img_el = page.locator(".overlay-el:not(.text)").first
@@ -98,7 +110,7 @@ def main() -> None:
         page.goto(f"{BASE}/documents/{scan_doc}/edit", wait_until="networkidle")
         page.click("#edit-existing-toggle")
         page.wait_for_selector("text=No selectable text on this page")
-        stage = page.locator("#page-stage").bounding_box()
+        stage = wait_for_page_image(page)
         x0, y0 = stage["x"] + stage["width"] * 0.30, stage["y"] + stage["height"] * 0.18
         page.mouse.move(x0, y0)
         page.mouse.down()
