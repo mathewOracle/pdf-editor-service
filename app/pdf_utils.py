@@ -2,16 +2,20 @@
 fields, and baking elements/field values into a final output PDF.
 """
 import io
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Optional
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import numpy as np
 from PIL import Image
 
+from .fonts import FontResolver, family_label, font_key
 from .image_utils import RGB, detect_background_rgb, recolor_background, remove_faint_marks
 from .watermark import WatermarkCandidate, find_watermarks, remove_watermarks
+
+log = logging.getLogger(__name__)
 
 RedactMode = Literal["text", "area", "image"]
 
@@ -260,6 +264,10 @@ class TextSpan:
     y1_frac: float
     font_size: float
     color: str  # "#rrggbb" of the original text, so replacements match
+    font_family: str  # display family, e.g. "Calibri"
+    bold: bool
+    italic: bool
+    baseline_frac: float  # where the letters sit, so a replacement lines up
 
 
 @dataclass
@@ -317,12 +325,15 @@ def extract_text_spans(
         for block in raw.get("blocks", []):
             for line in block.get("lines", []):
                 line_spans = line.get("spans", [])
-                text = "".join(s["text"] for s in line_spans).strip()
+                # Non-breaking spaces would end up in the edit box as odd characters.
+                text = "".join(s["text"] for s in line_spans).replace("\xa0", " ").strip()
                 if not text:
                     continue
                 x0, y0, x1, y1 = line["bbox"]
-                font_size = line_spans[0]["size"] if line_spans else 11.0
-                color = f"#{line_spans[0]['color']:06x}" if line_spans else "#000000"
+                # A line's style is its longest run of text ("Name: " in
+                # bold and a long answer in regular -> regular).
+                main = max(line_spans, key=lambda s: len(s["text"].strip()))
+                _, bold, italic = font_key(main["font"], main["flags"])
                 spans.append(
                     TextSpan(
                         text=text,
@@ -330,8 +341,12 @@ def extract_text_spans(
                         y0_frac=y0 / ph,
                         x1_frac=x1 / pw,
                         y1_frac=y1 / ph,
-                        font_size=font_size,
-                        color=color,
+                        font_size=round(main["size"], 2),
+                        color=f"#{main['color']:06x}",
+                        font_family=family_label(main["font"]),
+                        bold=bold,
+                        italic=italic,
+                        baseline_frac=main["origin"][1] / ph,
                     )
                 )
     return spans
@@ -383,19 +398,7 @@ def bake_pdf(
     if cleanup:
         doc = _rasterize(doc, cleanup)
 
-    for el in text_elements:
-        if not el["text"]:
-            continue  # "erase only" replacement: redaction above was the edit
-        page = doc[el["page_number"]]
-        pw, ph = page.rect.width, page.rect.height
-        point = fitz.Point(el["x_frac"] * pw, el["y_frac"] * ph + el["font_size"] * 0.8)
-        page.insert_text(
-            point,
-            el["text"],
-            fontsize=el["font_size"],
-            color=_hex_to_rgb01(el["color"]),
-            fontname="helv",
-        )
+    added_fonts = _draw_text(doc, original_path, text_elements)
 
     for el in image_elements:
         page = doc[el["page_number"]]
@@ -409,5 +412,47 @@ def bake_pdf(
 
     if flatten:
         doc = _rasterize(doc)
+    elif added_fonts:
+        _subset_fonts(doc)
     doc.save(output_path, garbage=4, deflate=True)
     doc.close()
+
+
+def _subset_fonts(doc: fitz.Document) -> None:
+    """A whole installed font is ~1MB; keep only the letters used. If a font
+    can't be subset the export is still correct, just bigger.
+    """
+    try:
+        doc.subset_fonts()
+    except Exception:
+        log.warning("Couldn't shrink the fonts; the export will be larger", exc_info=True)
+
+
+def _draw_text(doc: fitz.Document, original_path: Path, text_elements: list[dict]) -> bool:
+    """Draw the text elements in their resolved fonts. ``y_frac`` is the top
+    of a 1em box, the same box the browser preview uses. Returns whether
+    any font file had to be embedded.
+    """
+    added = False
+    with FontResolver(original_path) as fonts:
+        for el in text_elements:
+            if not el["text"]:
+                continue  # "erase only" replacement: the redaction was the edit
+            page = doc[el["page_number"]]
+            font = fonts.resolve(el["font_family"], el["bold"], el["italic"], el["text"])
+            fontname = font.base14
+            if fontname is None:
+                fontname = "F" + font.font_id.replace("-", "")
+                data, _ext = fonts.font_file(font.font_id)
+                page.insert_font(fontname=fontname, fontbuffer=data)  # deduplicated by PyMuPDF
+                added = True
+            pw, ph = page.rect.width, page.rect.height
+            baseline = el["y_frac"] * ph + font.baseline_ratio * el["font_size"]
+            page.insert_text(
+                fitz.Point(el["x_frac"] * pw, baseline),
+                el["text"],
+                fontsize=el["font_size"],
+                color=_hex_to_rgb01(el["color"]),
+                fontname=fontname,
+            )
+    return added

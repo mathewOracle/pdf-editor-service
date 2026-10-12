@@ -29,6 +29,9 @@ _ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("redact_x1_frac", "REAL"),
         ("redact_y1_frac", "REAL"),
         ("redact_mode", "VARCHAR"),
+        ("font_family", "VARCHAR"),
+        ("bold", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("italic", "BOOLEAN NOT NULL DEFAULT 0"),
     ),
     "document": (
         ("bg_color", "VARCHAR"),

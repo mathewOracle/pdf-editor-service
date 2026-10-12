@@ -5,18 +5,21 @@ import json
 import re
 import shutil
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import pdf_utils
 from .db import document_dir, exports_dir, get_session, init_db
+from .fonts import FontResolver, warm_font_index
 from .image_utils import image_pixel_size, make_background_transparent
 from .models import Asset, Document, Element, FieldValue
 
@@ -26,6 +29,56 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
+# Font names end up inside a CSS style attribute, so no quotes, semicolons
+# or brackets: letters, digits, spaces and a little punctuation only.
+FONT_FAMILY = r"^[\w .&+-]*$"
+
+
+@dataclass(frozen=True)
+class TextStyle:
+    font_size: float
+    color: str
+    font_family: Optional[str]
+    bold: bool
+    italic: bool
+
+
+def text_style_form(
+    font_size: float = Form(14.0, gt=0, le=400),
+    color: str = Form("#000000", pattern=HEX_COLOR),
+    font_family: Optional[str] = Form(None, max_length=120, pattern=FONT_FAMILY),
+    bold: bool = Form(False),
+    italic: bool = Form(False),
+) -> TextStyle:
+    """The style fields shared by every route that creates text."""
+    return TextStyle(font_size, color, font_family or None, bold, italic)
+
+
+TextStyleDep = Annotated[TextStyle, Depends(text_style_form)]
+
+
+class ElementPatch(BaseModel):
+    x_frac: Optional[float] = None
+    y_frac: Optional[float] = None
+    text: Optional[str] = None
+    font_size: Optional[float] = Field(None, gt=0, le=400)
+    color: Optional[str] = Field(None, pattern=HEX_COLOR)
+    font_family: Optional[str] = Field(None, max_length=120, pattern=FONT_FAMILY)
+    bold: Optional[bool] = None
+    italic: Optional[bool] = None
+
+
+def top_from_baseline(doc: Document, page_number: int, baseline_frac: float,
+                      style: TextStyle, text: str) -> float:
+    """y_frac (top of the 1em box) that puts the letters on ``baseline_frac``.
+    That's how replacement text lands exactly where the old line sat.
+    """
+    with FontResolver(Path(doc.stored_path)) as fonts:
+        font = fonts.resolve(style.font_family, style.bold, style.italic, text)
+    _, page_height = pdf_utils.get_page_size(Path(doc.stored_path), page_number)
+    return baseline_frac - font.baseline_ratio * style.font_size / page_height
 
 
 def document_edits(session: Session, doc: Document) -> pdf_utils.Edits:
@@ -79,6 +132,7 @@ def document_cleanup(doc: Document) -> pdf_utils.PixelCleanup:
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    warm_font_index()
 
 
 def get_document_or_404(session: Session, document_id: int) -> Document:
@@ -124,6 +178,8 @@ def edit_document(request: Request, document_id: int, session: SessionDep):
     doc = get_document_or_404(session, document_id)
     fields = pdf_utils.get_form_fields(Path(doc.stored_path))
     assets = session.exec(select(Asset).where(Asset.document_id == document_id)).all()
+    with FontResolver(Path(doc.stored_path)) as fonts:
+        font_families = fonts.dropdown_families()
     return templates.TemplateResponse(
         request,
         "editor.html",
@@ -138,6 +194,7 @@ def edit_document(request: Request, document_id: int, session: SessionDep):
             "watermarks": pdf_utils.detect_watermarks(Path(doc.stored_path)),
             "removed_watermarks": set(removed_watermarks(doc)),
             "default_faint_strength": DEFAULT_FAINT_MARK_STRENGTH,
+            "font_families": font_families,
         },
     )
 
@@ -223,12 +280,20 @@ def list_elements(request: Request, document_id: int, page: int, session: Sessio
     ).all()
     assets_by_id = {a.id: a for a in session.exec(select(Asset)).all()}
     page_width_pt, _ = pdf_utils.get_page_size(Path(doc.stored_path), page)
+    with FontResolver(Path(doc.stored_path)) as fonts:
+        fonts_by_id = {
+            el.id: fonts.resolve(el.font_family, el.bold, el.italic, el.text or "")
+            for el in elements
+            if el.kind == "text"
+        }
     return templates.TemplateResponse(
         request,
         "_elements_overlay.html",
         {
             "elements": elements,
             "assets_by_id": assets_by_id,
+            "fonts_by_id": fonts_by_id,
+            "web_fonts": {f.font_id for f in fonts_by_id.values() if f.web_loadable},
             "page_width_pt": page_width_pt,
         },
     )
@@ -242,29 +307,59 @@ def asset_file(document_id: int, asset_id: int, session: SessionDep):
     return FileResponse(asset.stored_path)
 
 
+@app.get("/documents/{document_id}/fonts/{font_id}")
+def font_file(document_id: int, font_id: str, session: SessionDep):
+    """A font file for the preview's @font-face: one embedded in this PDF or
+    an installed one the resolver picked. Only ids the resolver hands out
+    work, so this can't be used to read arbitrary files.
+    """
+    doc = get_document_or_404(session, document_id)
+    with FontResolver(Path(doc.stored_path)) as fonts:
+        found = fonts.font_file(font_id)
+    if found is None:
+        raise HTTPException(404, "Font not found")
+    data, ext = found
+    return Response(
+        content=data,
+        media_type=f"font/{ext}",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@app.get("/documents/{document_id}/fonts-resolve")
+def resolve_font(
+    document_id: int,
+    session: SessionDep,
+    family: str = Query("", max_length=120, pattern=FONT_FAMILY),
+    bold: bool = False,
+    italic: bool = False,
+    text: str = Query("", max_length=2000),
+):
+    """Which font new text would really be drawn in, so the panel can say
+    "exact match" or "Calibri isn't installed, using Helvetica" up front.
+    """
+    doc = get_document_or_404(session, document_id)
+    with FontResolver(Path(doc.stored_path)) as fonts:
+        font = fonts.resolve(family or None, bold, italic, text)
+    return {"label": font.label, "quality": font.quality, "note": font.note}
+
+
 @app.post("/documents/{document_id}/elements/text", response_class=HTMLResponse)
 def add_text_element(
     document_id: int,
     session: SessionDep,
+    style: TextStyleDep,
     page_number: int = Form(...),
     x_frac: float = Form(...),
     y_frac: float = Form(...),
-    text: str = Form(...),
-    font_size: float = Form(14.0),
-    color: str = Form("#000000"),
+    text: str = Form(..., min_length=1),
 ):
+    """Place new text. ``y_frac`` is the top of the text."""
     get_document_or_404(session, document_id)
-    el = Element(
-        document_id=document_id,
-        page_number=page_number,
-        kind="text",
-        x_frac=x_frac,
-        y_frac=y_frac,
-        text=text,
-        font_size=font_size,
-        color=color,
-    )
-    session.add(el)
+    session.add(Element(
+        document_id=document_id, page_number=page_number, kind="text",
+        x_frac=x_frac, y_frac=y_frac, text=text, **asdict(style),
+    ))
     session.commit()
     return HTMLResponse("")
 
@@ -298,72 +393,55 @@ def add_image_element(
 def replace_text_element(
     document_id: int,
     session: SessionDep,
+    style: TextStyleDep,
     page_number: int = Form(...),
     x_frac: float = Form(...),
     y_frac: float = Form(...),
     text: str = Form(""),  # empty = "just erase the original", a valid edit
-    font_size: float = Form(14.0),
-    color: str = Form("#000000"),
     redact_x0_frac: float = Form(...),
     redact_y0_frac: float = Form(...),
     redact_x1_frac: float = Form(...),
     redact_y1_frac: float = Form(...),
     redact_mode: pdf_utils.RedactMode = Form("area"),
+    baseline_frac: Optional[float] = Form(None),
 ):
-    """Like add_text_element, but also remembers the original-PDF
-    rectangle to redact at export time -- this is "edit existing text",
-    whereas add_text_element is "place new text on a blank area".
+    """Edit existing content: remember the original rectangle to redact and
+    draw ``text`` in its place. With ``baseline_frac`` (sent when a real
+    text line was picked) the new letters sit on the old line's baseline,
+    whatever font was chosen.
     """
-    get_document_or_404(session, document_id)
-    el = Element(
-        document_id=document_id,
-        page_number=page_number,
-        kind="text",
-        x_frac=x_frac,
-        y_frac=y_frac,
-        text=text,
-        font_size=font_size,
-        color=color,
-        redact_x0_frac=redact_x0_frac,
-        redact_y0_frac=redact_y0_frac,
-        redact_x1_frac=redact_x1_frac,
-        redact_y1_frac=redact_y1_frac,
+    doc = get_document_or_404(session, document_id)
+    if baseline_frac is not None:
+        y_frac = top_from_baseline(doc, page_number, baseline_frac, style, text)
+    session.add(Element(
+        document_id=document_id, page_number=page_number, kind="text",
+        x_frac=x_frac, y_frac=y_frac, text=text, **asdict(style),
+        redact_x0_frac=redact_x0_frac, redact_y0_frac=redact_y0_frac,
+        redact_x1_frac=redact_x1_frac, redact_y1_frac=redact_y1_frac,
         redact_mode=redact_mode,
-    )
-    session.add(el)
+    ))
     session.commit()
     return HTMLResponse("")
 
 
 @app.patch("/documents/{document_id}/elements/{element_id}", response_class=HTMLResponse)
-def update_element(
-    document_id: int,
-    element_id: int,
-    session: SessionDep,
-    x_frac: Optional[float] = Form(None),
-    y_frac: Optional[float] = Form(None),
-    text: Optional[str] = Form(None),
-    font_size: Optional[float] = Form(None),
-    color: Optional[str] = Form(None),
-):
-    """Single endpoint for both moving an element (drag-and-drop sends
-    x_frac/y_frac) and editing its content (double-click-to-edit sends
-    text/font_size/color) -- same row, no reason to split the API.
-    Only fields actually present in the request get touched.
+async def update_element(document_id: int, element_id: int, request: Request, session: SessionDep):
+    """Move an element (drag sends x_frac/y_frac) or restyle/reword text
+    (the edit panel sends text and style fields). Only fields actually sent
+    are changed. Checkboxes are explicit "true"/"false" here, because an
+    unticked box would otherwise look like "not sent".
     """
     el = session.get(Element, element_id)
     if el is None or el.document_id != document_id:
         raise HTTPException(404, "Element not found")
-    if x_frac is not None:
-        el.x_frac = x_frac
-    if y_frac is not None:
-        el.y_frac = y_frac
-    if text is not None:
-        el.text = text
-    if font_size is not None:
-        el.font_size = font_size
-    if color is not None:
-        el.color = color
+    try:
+        changes = ElementPatch.model_validate(dict(await request.form()))
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
+    for name, value in changes.model_dump(exclude_unset=True).items():
+        if name == "font_family":
+            value = value or None  # "" from the dropdown = default font
+        setattr(el, name, value)
     session.add(el)
     session.commit()
     return HTMLResponse("")
@@ -464,6 +542,9 @@ def export_document(document_id: int, session: SessionDep, flatten: bool = Form(
             "text": el.text,
             "font_size": el.font_size,
             "color": el.color,
+            "font_family": el.font_family,
+            "bold": el.bold,
+            "italic": el.italic,
         }
         for el in elements
         if el.kind == "text"

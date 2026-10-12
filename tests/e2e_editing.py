@@ -14,11 +14,11 @@ the blank-page bug slipped through once already):
 import sys
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import httpx
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:8420"
+BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8420"
 SIGNATURE = Path("/tmp/fake_signature.png")
 SHOTS = Path("/tmp/e2e_shots")
 SHOTS.mkdir(exist_ok=True)
@@ -66,12 +66,15 @@ def main() -> None:
         page.goto(f"{BASE}/documents/{text_doc}/edit", wait_until="networkidle")
         page.click("#edit-existing-toggle")
         page.wait_for_selector(".text-span-hit")
-        target = page.locator(".text-span-hit[title='NITT GUEST HOUSE']")
+        # Hit-box titles are "<text>\n<font> <size>pt"; pick the exact line.
+        target = page.locator(".text-span-hit").filter(
+            has=page.locator("xpath=self::*[starts-with(@title, 'NITT GUEST HOUSE\n')]")
+        )
         target.click()
         check("panel prefilled with original text",
-              page.input_value("#edit-existing-text") == "NITT GUEST HOUSE")
-        page.fill("#edit-existing-text", "NITT GUEST HOUSE - EDITED")
-        page.click("text=Apply")
+              page.input_value("#tp-text") == "NITT GUEST HOUSE")
+        page.fill("#tp-text", "NITT GUEST HOUSE - EDITED")
+        page.click("#tp-submit")
         page.wait_for_selector(".overlay-el.text >> text=NITT GUEST HOUSE - EDITED")
         check("white-out cover rendered in preview", page.locator(".redact-cover").count() == 1)
         page.screenshot(path=SHOTS / "1_replaced.png", full_page=True)
@@ -80,9 +83,8 @@ def main() -> None:
         page.click("#edit-existing-toggle")  # leave edit-existing mode
         el = page.locator(".overlay-el.text").first
         el.dblclick()
-        page.keyboard.press("Meta+A")
-        page.keyboard.type("GUEST HOUSE (re-edited)")
-        page.keyboard.press("Enter")
+        page.fill("#tp-text", "GUEST HOUSE (re-edited)")
+        page.click("#tp-submit")
         page.wait_for_selector(".overlay-el.text >> text=GUEST HOUSE (re-edited)")
         check("double-click edit saved and re-rendered", True)
         check("redaction kept after re-edit", page.locator(".redact-cover").count() == 1)
@@ -116,9 +118,9 @@ def main() -> None:
         page.mouse.down()
         page.mouse.move(x0 + stage["width"] * 0.35, y0 + stage["height"] * 0.03, steps=8)
         page.mouse.up()
-        page.wait_for_selector("#edit-existing-panel", state="visible")
-        page.fill("#edit-existing-text", "")  # erase only
-        page.click("text=Apply")
+        page.wait_for_selector("#text-panel:not([hidden])")
+        page.fill("#tp-text", "")  # erase only
+        page.click("#tp-submit")
         page.wait_for_selector(".redact-cover")
         check("area erase on scanned page", page.locator(".redact-cover").count() == 1)
         page.screenshot(path=SHOTS / "4_scan_erased.png", full_page=True)
@@ -127,7 +129,9 @@ def main() -> None:
     # ---- 5. export: original text must be truly gone ---------------------
     out = httpx.post(f"{BASE}/documents/{text_doc}/export", data={}).content
     exported = fitz.open(stream=out, filetype="pdf")
-    page_text = exported[0].get_text()
+    # Fonts often map several hyphen code points (-, U+00AD, U+2010) to one
+    # glyph, and text extraction may return any of them. They look identical.
+    page_text = exported[0].get_text().translate({0xAD: "-", 0x2010: "-", 0xA0: " "})
     check("export has the edited text", "GUEST HOUSE (re-edited)" in page_text)
     check("export no longer contains original line",
           "NITT GUEST HOUSE\n" not in page_text and "\nNITT GUEST HOUSE" not in page_text)

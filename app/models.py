@@ -59,6 +59,11 @@ class Element(SQLModel, table=True):
     text: Optional[str] = None
     font_size: float = 14.0
     color: str = "#000000"
+    # Family as shown in the UI ("Calibri"). fonts.FontResolver turns
+    # family + bold + italic into a real font file. None = Helvetica.
+    font_family: Optional[str] = None
+    bold: bool = False
+    italic: bool = False
 
     # Image-only fields
     asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")

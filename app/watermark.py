@@ -13,7 +13,7 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator, Optional
 
-import fitz
+import pymupdf as fitz
 
 ANNOT_KEY = "annot"
 _TEXT_KEY_PREFIX = "text:"

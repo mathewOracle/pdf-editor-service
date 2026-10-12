@@ -247,3 +247,15 @@ input[type="range"] { width: 100%; }
 fieldset.plain { border: 0; padding: 0; margin: 0 0 10px; }
 .check-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; cursor: pointer; }
 .check-row input { width: auto; margin-top: 3px; }
+
+/* ---- text panel ---- */
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.btn.small { font-size: 13px; padding: 6px 10px; margin-top: 10px; }
+.text-panel { margin-top: 12px; border-top: 1px solid #e5e7eb; padding-top: 12px; }
+.style-row { display: flex; gap: 12px; align-items: flex-end; }
+.style-row .field-row { flex: 1; }
+.font-note { font-size: 13px; margin: 6px 0 4px; color: var(--muted); }
+.font-note[data-quality="exact"] { color: #15803d; }
+.font-note[data-quality="similar"] { color: #92400e; }
+.spans-empty { position: absolute; top: 8px; left: 8px; background: #fff; padding: 4px 8px; border-radius: 6px; }
+#text-spans-layer.copying .text-span-hit { background: rgba(37, 99, 235, 0.18); outline-color: var(--accent); cursor: copy; }

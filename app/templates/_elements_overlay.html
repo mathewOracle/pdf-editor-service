@@ -1,5 +1,14 @@
+{# Load the exact font files the export will use, so the preview matches. #}
+{% if web_fonts %}
+<style>
+  {% for font_id in web_fonts | sort %}
+  @font-face { font-family: "pdf-{{ font_id }}"; src: url("/documents/{{ elements[0].document_id }}/fonts/{{ font_id }}"); }
+  {% endfor %}
+</style>
+{% endif %}
 {% for el in elements %}
   {% if el.kind == "text" %}
+  {% set font = fonts_by_id[el.id] %}
   {% if el.redact_x0_frac is not none %}
   <div class="redact-cover"
        style="left: {{ el.redact_x0_frac * 100 }}%; top: {{ el.redact_y0_frac * 100 }}%;
@@ -9,10 +18,23 @@
   <div
     id="el-{{ el.id }}"
     class="overlay-el text{% if not el.text %} removed{% endif %}"
-    style="left: {{ el.x_frac * 100 }}%; top: {{ el.y_frac * 100 }}%; font-size: calc({{ (el.font_size * 100 / page_width_pt) }} * 1cqw); color: {{ el.color }};"
+    style="left: {{ el.x_frac * 100 }}%; top: {{ el.y_frac * 100 }}%;
+           font-size: calc({{ (el.font_size * 100 / page_width_pt) }} * 1cqw); color: {{ el.color }};
+           font-family: {{ font.css_family }};
+           font-weight: {{ 'bold' if el.bold else 'normal' }}; font-style: {{ 'italic' if el.italic else 'normal' }};"
+    data-element-id="{{ el.id }}"
+    data-page-number="{{ el.page_number }}"
+    data-text="{{ el.text or '' }}"
+    data-font-family="{{ el.font_family or '' }}"
+    data-font-size="{{ el.font_size }}"
+    data-color="{{ el.color }}"
+    data-bold="{{ el.bold | lower }}"
+    data-italic="{{ el.italic | lower }}"
+    data-font-note="{{ font.note }}"
+    data-font-quality="{{ font.quality }}"
     onmousedown="startDrag(event, {{ el.id }})"
-    ondblclick="startInlineEdit(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})"
-    title="Drag to move, double-click to edit"
+    ondblclick="openTextPanelForElement(event, this)"
+    title="Drag to move, double-click to edit ({{ font.label }})"
   ><span class="el-text">{{ el.text or "" }}</span><span class="remove-btn" onclick="removeElement(event, {{ el.document_id }}, {{ el.id }}, {{ el.page_number }})" title="Remove (restores original text)">x</span></div>
   {% else %}
   {% set asset = assets_by_id[el.asset_id] %}

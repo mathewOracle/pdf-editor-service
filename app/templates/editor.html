@@ -5,48 +5,49 @@
   <div class="sidebar">
 
     <div class="card">
-      <h2>Add text</h2>
-      <div class="field-row">
-        <label>Text to place</label>
-        <input type="text" id="text-input" placeholder="e.g. John Smith" />
+      <h2>Text</h2>
+      <p class="hint">Edit text already in the PDF, or add new text in the same font.</p>
+      <div class="btn-row">
+        <button class="btn secondary" id="edit-existing-toggle" type="button" aria-pressed="false" onclick="toggleEditExistingMode()">Edit existing text</button>
+        <button class="btn secondary" id="add-text-toggle" type="button" aria-pressed="false" onclick="startAddText()">Add new text</button>
       </div>
-      <div class="field-row">
-        <label>Font size (pt)</label>
-        <input type="number" id="font-size-input" value="14" min="6" max="72" />
-      </div>
-      <div class="field-row">
-        <label>Color</label>
-        <input type="color" id="color-input" value="#000000" />
-      </div>
-      <button class="btn" onclick="setPlacingMode('text')">Place text (click the page)</button>
-      <button class="btn secondary" onclick="setPlacingMode(null)">Cancel</button>
-      <p class="hint" style="margin-top:10px">Tip: double-click any placed text to change its wording.</p>
-    </div>
+      <p class="hint" id="text-mode-hint" role="status" aria-live="polite"></p>
 
-    <div class="card">
-      <h2>Edit existing text</h2>
-      <p class="hint">Highlights the text already in this PDF. Click a line to change it.</p>
-      <button class="btn secondary" id="edit-existing-toggle" onclick="toggleEditExistingMode()">Pick text to edit</button>
-      <div id="edit-existing-panel" style="display:none; margin-top:12px;">
+      <form id="text-panel" class="text-panel" hidden onsubmit="submitTextPanel(event)">
+        <p class="hint" id="text-panel-original" hidden></p>
         <div class="field-row">
-          <label>Original</label>
-          <div id="edit-existing-original" class="hint" style="word-break:break-word;"></div>
+          <label for="tp-text" id="tp-text-label">Text</label>
+          <input type="text" id="tp-text" name="text" autocomplete="off" oninput="scheduleFontCheck()" />
         </div>
         <div class="field-row">
-          <label for="edit-existing-text">Replace with (leave empty to just remove it)</label>
-          <input type="text" id="edit-existing-text" />
+          <label for="tp-font">Font</label>
+          <select id="tp-font" name="font_family" onchange="scheduleFontCheck()">
+            {% for family in font_families %}
+            <option value="{{ family }}">{{ family }}</option>
+            {% endfor %}
+          </select>
         </div>
-        <div class="field-row">
-          <label for="edit-existing-size">Font size (pt)</label>
-          <input type="number" id="edit-existing-size" min="4" max="72" step="0.5" />
+        <div class="style-row">
+          <div class="field-row">
+            <label for="tp-size">Size (pt)</label>
+            <input type="number" id="tp-size" name="font_size" value="12" min="2" max="400" step="0.5" required />
+          </div>
+          <div class="field-row">
+            <label for="tp-color">Color</label>
+            <input type="color" id="tp-color" name="color" value="#000000" />
+          </div>
         </div>
-        <div class="field-row">
-          <label for="edit-existing-color">Color</label>
-          <input type="color" id="edit-existing-color" value="#000000" />
+        <div class="style-row">
+          <label class="check-row"><input type="checkbox" id="tp-bold" name="bold" value="true" onchange="scheduleFontCheck()" /> <strong>Bold</strong></label>
+          <label class="check-row"><input type="checkbox" id="tp-italic" name="italic" value="true" onchange="scheduleFontCheck()" /> <em>Italic</em></label>
         </div>
-        <button class="btn" onclick="confirmReplaceText()">Apply</button>
-        <button class="btn secondary" onclick="cancelReplaceText()">Cancel</button>
-      </div>
+        <p class="font-note" id="tp-font-note" role="status" aria-live="polite"></p>
+        <div class="btn-row">
+          <button class="btn" type="submit" id="tp-submit">Apply</button>
+          <button class="btn secondary" type="button" onclick="closeTextPanel()">Cancel</button>
+        </div>
+        <button class="btn secondary small" type="button" id="tp-copy-style" onclick="startCopyStyle()">Copy style from text on the page</button>
+      </form>
     </div>
 
     <div class="card">
@@ -246,7 +247,7 @@
     stage.dataset.pageHeightPt = PAGE_HEIGHTS_PT[n];
     document.getElementById("page-image").src = `/documents/{{ doc.id }}/page/${n}.png?t=${Date.now()}`;
     refreshOverlay({{ doc.id }}, n);
-    if (editExistingActive) loadTextSpans({{ doc.id }}, n);
+    textEditorPageChanged();
   }
 </script>
 {% endblock %}
