@@ -11,6 +11,7 @@ import pymupdf as fitz
 import numpy as np
 from PIL import Image
 
+from . import ocr
 from .fonts import FontResolver, family_label, font_key
 from .image_utils import RGB, detect_background_rgb, recolor_background, remove_faint_marks
 from .watermark import WatermarkCandidate, find_watermarks, remove_watermarks
@@ -268,6 +269,8 @@ class TextSpan:
     bold: bool
     italic: bool
     baseline_frac: float  # where the letters sit, so a replacement lines up
+    source: Literal["text", "scan"] = "text"  # "scan" = read by OCR, not a real text layer
+    redact_mode: RedactMode = "text"  # how to clear the original before drawing the replacement
 
 
 @dataclass
@@ -349,6 +352,34 @@ def extract_text_spans(
                         baseline_frac=main["origin"][1] / ph,
                     )
                 )
+    # No text layer at all -> this page is a scan. OCR reads its lines so
+    # they're still clickable, just like real text; is_covered() keeps a
+    # line that was already replaced/erased from reappearing in the list.
+    if not spans and ocr.available():
+        page_redactions = [
+            (r.x0_frac, r.y0_frac, r.x1_frac, r.y1_frac)
+            for r in edits.redactions
+            if r.page_number == page_number
+        ]
+        cache_dir = pdf_path.parent / "ocr_cache"
+        for line in ocr.page_lines(pdf_path, page_number, cache_dir):
+            if any(ocr.is_covered(line, box) for box in page_redactions):
+                continue
+            x0, y0, x1, y1 = ocr.edit_box(line)
+            spans.append(
+                TextSpan(
+                    text=line.text,
+                    x0_frac=x0, y0_frac=y0, x1_frac=x1, y1_frac=y1,
+                    font_size=line.font_size,
+                    color=line.color,
+                    font_family="Helvetica",  # scans carry no font info
+                    bold=line.bold,
+                    italic=False,
+                    baseline_frac=line.baseline,
+                    source="scan",
+                    redact_mode="area",  # no text layer to redact, only pixels
+                )
+            )
     return spans
 
 

@@ -97,8 +97,9 @@ function loadTextSpans() {
 
 function spanHitBox(span) {
   const hit = document.createElement("div");
-  hit.className = "text-span-hit";
-  hit.title = `${span.text}\n${span.font_family} ${span.font_size}pt`;
+  hit.className = span.source === "scan" ? "text-span-hit scan" : "text-span-hit";
+  const sourceNote = span.source === "scan" ? "\nRead from the scan by OCR; the position may be a little off." : "";
+  hit.title = `${span.text}\n${span.font_family} ${span.font_size}pt${sourceNote}`;
   Object.assign(hit.style, {
     left: `${span.x0_frac * 100}%`,
     top: `${span.y0_frac * 100}%`,
@@ -111,7 +112,7 @@ function spanHitBox(span) {
     if (textMode === "copy") return copyStyleFrom(span);
     markSelected(hit);
     openTextPanel(
-      { kind: "replace", pageNumber: pageNo(), mode: "text", baseline: span.baseline_frac,
+      { kind: "replace", pageNumber: pageNo(), mode: span.redact_mode, baseline: span.baseline_frac,
         box: [span.x0_frac, span.y0_frac, span.x1_frac, span.y1_frac] },
       { ...styleOf(span), text: span.text },
       `Original: “${span.text}”`

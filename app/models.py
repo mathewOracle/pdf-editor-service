@@ -84,6 +84,21 @@ class Element(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class HistoryStep(SQLModel, table=True):
+    """One undo or redo step: the document's whole editable state (as JSON,
+    see history.py) from just before / after a change. Whole snapshots are
+    tiny here (a few KB) and make undo impossible to get subtly wrong.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    document_id: int = Field(foreign_key="document.id", index=True)
+    stack: str  # "undo" | "redo"
+    label: str  # what the change was, e.g. "Replace text"
+    page_number: Optional[int] = None  # where it happened, to show it on undo
+    snapshot: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class FieldValue(SQLModel, table=True):
     """A value typed into a detected AcroForm field, pending export."""
 

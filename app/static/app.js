@@ -52,6 +52,7 @@ function refreshOverlay(documentId, pageNumber) {
     target: "#overlay-layer",
     swap: "innerHTML",
   });
+  refreshHistoryButtons(); // undo.js
 }
 
 function startDrag(evt, elementId) {
@@ -86,7 +87,7 @@ function onDragEnd() {
   if (lastX !== undefined) {
     const documentId = stage.dataset.documentId;
     const body = new URLSearchParams({ x_frac: lastX, y_frac: lastY });
-    fetch(`/documents/${documentId}/elements/${elementId}`, { method: "PATCH", body });
+    fetch(`/documents/${documentId}/elements/${elementId}`, { method: "PATCH", body }).then(refreshHistoryButtons);
   }
   dragState = null;
 }

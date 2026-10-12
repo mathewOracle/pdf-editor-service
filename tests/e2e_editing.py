@@ -8,15 +8,21 @@ the blank-page bug slipped through once already):
   1. Clicking an existing PDF text line and replacing it.
   2. Double-click-to-edit on already-placed text (not "type once" only).
   3. Placing and removing an image element.
-  4. Drag-a-box erase on a scanned page with no text layer.
-  5. Export genuinely removes the original text (redaction, not overlay).
+  4. OCR on a scanned page: existing scanned text is clickable and editable.
+  5. Drag-a-box erase for parts of a scan OCR doesn't turn into text.
+  6. Export genuinely removes the original content (redaction, not overlay)
+     for both the real text layer and, via OCR, a scanned page.
 """
+import shutil
 import sys
 from pathlib import Path
 
 import pymupdf as fitz
 import httpx
 from playwright.sync_api import sync_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app import ocr  # noqa: E402 (needs the sys.path tweak above)
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8420"
 SIGNATURE = Path("/tmp/fake_signature.png")
@@ -30,8 +36,8 @@ def upload(path: Path) -> int:
     return int(r.headers["location"].split("/")[2])
 
 
-def check(label: str, ok: bool) -> None:
-    print(("PASS " if ok else "FAIL ") + label)
+def check(label: str, ok: bool, detail="") -> None:
+    print(("PASS " if ok else "FAIL ") + label + (f"  ({detail})" if detail != "" else ""))
     if not ok:
         sys.exit(1)
 
@@ -66,10 +72,9 @@ def main() -> None:
         page.goto(f"{BASE}/documents/{text_doc}/edit", wait_until="networkidle")
         page.click("#edit-existing-toggle")
         page.wait_for_selector(".text-span-hit")
-        # Hit-box titles are "<text>\n<font> <size>pt"; pick the exact line.
-        target = page.locator(".text-span-hit").filter(
-            has=page.locator("xpath=self::*[starts-with(@title, 'NITT GUEST HOUSE\n')]")
-        )
+        # Hit-box titles are "<text>\n<font> <size>pt"; the prefix alone
+        # is unique on this form, so a plain CSS prefix match is enough.
+        target = page.locator(".text-span-hit[title^='NITT GUEST HOUSE']")
         target.click()
         check("panel prefilled with original text",
               page.input_value("#tp-text") == "NITT GUEST HOUSE")
@@ -108,25 +113,38 @@ def main() -> None:
         page.wait_for_function("document.querySelectorAll('.overlay-el:not(.text)').length === 0")
         check("image element removed", True)
 
-        # ---- 4. drag-a-box erase on a scanned page -----------------------
+        # ---- 4. OCR: click an existing line on a *scanned* page ----------
         page.goto(f"{BASE}/documents/{scan_doc}/edit", wait_until="networkidle")
         page.click("#edit-existing-toggle")
-        page.wait_for_selector("text=No selectable text on this page")
+        page.wait_for_selector(".text-span-hit.scan")
         stage = wait_for_page_image(page)
-        x0, y0 = stage["x"] + stage["width"] * 0.30, stage["y"] + stage["height"] * 0.18
+        scanned = page.locator(".text-span-hit[title^='NITT GUEST HOUSE']")
+        check("OCR found the scanned heading", scanned.count() == 1)
+        scanned.click()
+        check("panel prefilled with the OCR'd text", page.input_value("#tp-text") == "NITT GUEST HOUSE")
+        page.fill("#tp-text", "GUEST HOUSE (OCR edited)")
+        page.click("#tp-submit")
+        page.wait_for_selector(".overlay-el.text >> text=GUEST HOUSE (OCR edited)")
+        check("OCR'd line painted over in the preview", page.locator(".redact-cover").count() == 1)
+        page.screenshot(path=SHOTS / "4_scan_ocr_edited.png", full_page=True)
+
+        # ---- 5. drag-a-box erase, away from any OCR'd line ----------------
+        # A blank patch of right margin, in the visible part of the page --
+        # the stage is taller than the viewport, and dragging below the
+        # fold doesn't register (the pointer events land outside the window).
+        x0, y0 = stage["x"] + stage["width"] * 0.85, stage["y"] + stage["height"] * 0.30
         page.mouse.move(x0, y0)
         page.mouse.down()
-        page.mouse.move(x0 + stage["width"] * 0.35, y0 + stage["height"] * 0.03, steps=8)
+        page.mouse.move(x0 + stage["width"] * 0.1, y0 + stage["height"] * 0.03, steps=8)
         page.mouse.up()
         page.wait_for_selector("#text-panel:not([hidden])")
         page.fill("#tp-text", "")  # erase only
         page.click("#tp-submit")
-        page.wait_for_selector(".redact-cover")
-        check("area erase on scanned page", page.locator(".redact-cover").count() == 1)
-        page.screenshot(path=SHOTS / "4_scan_erased.png", full_page=True)
+        page.wait_for_function("document.querySelectorAll('.redact-cover').length === 2")
+        check("area erase on a scanned page (away from OCR'd text)", True)
         browser.close()
 
-    # ---- 5. export: original text must be truly gone ---------------------
+    # ---- 6. export: original content must be truly gone -------------------
     out = httpx.post(f"{BASE}/documents/{text_doc}/export", data={}).content
     exported = fitz.open(stream=out, filetype="pdf")
     # Fonts often map several hyphen code points (-, U+00AD, U+2010) to one
@@ -138,7 +156,15 @@ def main() -> None:
     exported[0].get_pixmap(dpi=110).save(SHOTS / "5_export_page0.png")
 
     out = httpx.post(f"{BASE}/documents/{scan_doc}/export", data={}).content
-    fitz.open(stream=out, filetype="pdf")[0].get_pixmap(dpi=110).save(SHOTS / "5_export_scan.png")
+    scan_pdf = Path("/tmp/e2e_scan_export.pdf")
+    scan_pdf.write_bytes(out)
+    cache_dir = Path("/tmp/e2e_scan_export_ocr_cache")
+    shutil.rmtree(cache_dir, ignore_errors=True)  # don't read a stale cache from a previous run
+    lines = {line.text for line in ocr.page_lines(scan_pdf, 0, cache_dir)}
+    check("export: scanned replacement is readable (OCR'd back out)",
+          "GUEST HOUSE (OCR edited)" in lines, lines)
+    check("export: original scanned heading is gone", "NITT GUEST HOUSE" not in lines, lines)
+    fitz.open(scan_pdf)[0].get_pixmap(dpi=110).save(SHOTS / "5_export_scan.png")
     print(f"\nAll checks passed. Screenshots in {SHOTS}")
 
 

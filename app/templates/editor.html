@@ -178,6 +178,9 @@
 
   <div>
     <div class="page-nav">
+      <button class="btn secondary" id="undo-btn" data-verb="Undo" onclick="doHistoryStep('undo')" disabled title="Nothing to undo">&#8630; Undo</button>
+      <button class="btn secondary" id="redo-btn" data-verb="Redo" onclick="doHistoryStep('redo')" disabled title="Nothing to redo">&#8631; Redo</button>
+      <span class="page-nav-sep" aria-hidden="true"></span>
       {% for n in page_numbers %}
       <a class="btn secondary" href="#" onclick="showPage({{ n }}); return false;">Page {{ n + 1 }}</a>
       {% endfor %}
@@ -248,6 +251,14 @@
     document.getElementById("page-image").src = `/documents/{{ doc.id }}/page/${n}.png?t=${Date.now()}`;
     refreshOverlay({{ doc.id }}, n);
     textEditorPageChanged();
+    sessionStorage.setItem(`pdf-editor-last-page-{{ doc.id }}`, n);
   }
+
+  // Undo/redo reloads the page (see undo.js); land back on whichever page
+  // changed, or wherever you last were, instead of resetting to page 1.
+  window.addEventListener("DOMContentLoaded", () => {
+    const stored = parseInt(sessionStorage.getItem(`pdf-editor-last-page-{{ doc.id }}`), 10);
+    if (!Number.isNaN(stored) && stored > 0 && stored < PAGE_HEIGHTS_PT.length) showPage(stored);
+  });
 </script>
 {% endblock %}

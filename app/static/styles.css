@@ -201,6 +201,10 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 }
 .text-span-hit:hover { background: rgba(250, 204, 21, 0.5); }
 .text-span-hit.selected { background: rgba(37, 99, 235, 0.25); outline-color: var(--accent); }
+/* OCR-read lines (scanned pages): a different color since the position and
+   font are estimates, not read straight out of the PDF. */
+.text-span-hit.scan { background: rgba(16, 185, 129, 0.15); outline: 1px dashed rgba(5, 150, 105, 0.85); }
+.text-span-hit.scan:hover { background: rgba(16, 185, 129, 0.35); }
 
 .overlay-el .remove-btn {
   position: absolute;
@@ -220,6 +224,8 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .overlay-el:hover .remove-btn { display: block; }
 
 .page-nav { display: flex; align-items: center; gap: 8px; justify-content: center; margin-bottom: 8px; }
+.page-nav-sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+.btn.secondary:disabled { opacity: 0.4; cursor: default; }
 
 .asset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .asset-thumb {
