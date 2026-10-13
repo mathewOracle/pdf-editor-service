@@ -41,14 +41,16 @@ doesn't answer -- check `status.sh` first.
 
 ```bash
 uv venv
-uv pip install -r requirements.txt \
+uv pip install -r requirements.txt
 ```
+
+(No `uv`? `pip install -r requirements.txt` into a venv works just as well.)
 
 On macOS, also install the OCR extras (lets you edit text on *scanned*
 pages -- see [What it does](#what-it-does)):
 
 ```bash
-uv pip install -r requirements-macos.txt \
+uv pip install -r requirements-macos.txt
 ```
 
 This step is optional and safe to skip: without it, scanned pages fall

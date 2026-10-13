@@ -4,7 +4,7 @@
 # pages fall back to drag-a-box erase/replace.
 #
 # Install with:
-#   uv pip install -r requirements-macos.txt \
+#   uv pip install -r requirements-macos.txt
 pyobjc-core==12.2.2
 pyobjc-framework-cocoa==12.2.2
 pyobjc-framework-coreml==12.2.2
