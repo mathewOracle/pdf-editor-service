@@ -1,0 +1,12 @@
+# macOS-only extras: Apple's Vision framework, used by app/ocr.py to read
+# scanned PDF pages offline. The app runs fine without these -- OCR just
+# won't be available (app/ocr.py: available() returns False) and scanned
+# pages fall back to drag-a-box erase/replace.
+#
+# Install with:
+#   uv pip install -r requirements-macos.txt \
+pyobjc-core==12.2.2
+pyobjc-framework-cocoa==12.2.2
+pyobjc-framework-coreml==12.2.2
+pyobjc-framework-quartz==12.2.2
+pyobjc-framework-vision==12.2.2
