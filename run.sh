@@ -27,6 +27,7 @@ fi
 if [[ ! -x "$PROJECT_DIR/.venv/bin/uvicorn" ]]; then
   echo "No .venv found. Run this first:" >&2
   echo "  uv venv" >&2
+  echo "  uv pip install -r requirements.txt" >&2
   exit 1
 fi
 
